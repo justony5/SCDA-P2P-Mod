@@ -78,6 +78,10 @@ static void logf(const char *fmt, ...)
     LeaveCriticalSection(&g_logLock);
 }
 
+/* --------------------------------------------- XInput controller bridge */
+#define DIRECTINPUT_VERSION 0x0800
+#include "xinput_bridge.c"
+
 /* ---------------------------------------------------- real dinput8.dll */
 static FARPROC real_proc(const char *name)
 {
@@ -104,7 +108,9 @@ typedef LPCVOID (WINAPI *GetdfDIJoystick_t)(void);
 HRESULT WINAPI Proxy_DirectInput8Create(HINSTANCE h, DWORD v, REFIID r, LPVOID *o, void *u)
 {
     DirectInput8Create_t fn = (DirectInput8Create_t)real_proc("DirectInput8Create");
-    return fn ? fn(h, v, r, o, u) : E_FAIL;
+    HRESULT hr = fn ? fn(h, v, r, o, u) : E_FAIL;
+    if (SUCCEEDED(hr) && o && *o) *o = xb_wrap_dinput(*o);
+    return hr;
 }
 HRESULT WINAPI Proxy_DllCanUnloadNow(void)
 {

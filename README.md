@@ -87,8 +87,41 @@ What `dinput8.dll` adds on the game side (`[Display]` in `SCDA_P2P.ini`):
 The first time, the original files are saved as `Default.ini.scdap2p-backup` and
 `PlayerProfilePC_<name>.ini.scdap2p-backup`.
 
-Controller: the stock axis mapping already matches an Xbox-style pad. Triggers are not usable as
-buttons (the game uses old DirectInput, which reports both triggers as one axis).
+### Xbox controller (XInput) support
+The game reads controllers through old DirectInput, where an Xbox controller's two triggers share
+one axis and can't be bound. `dinput8.dll` now feeds the game's controller from XInput instead:
+
+| Game button | Xbox controller |
+|---|---|
+| Joy1-Joy4 | A, B, X, Y |
+| Joy5 / Joy6 | LB / RB |
+| Joy7 / Joy8 | Back (View) / Start (Menu) |
+| Joy9 / Joy10 | Left stick click / right stick click |
+| **Joy11 / Joy12** | **LT / RT** |
+| Joy13-Joy16 | D-pad up, right, down, left |
+
+Sticks: left stick moves, right stick turns the camera (same axes as before). Both triggers can be
+bound in the game's controls menu like any other button.
+
+Launcher option **Xbox controller: RT fire, LT alt fire, LB sprint / spy run away, RB gadget** (on by default)
+changes the stock controller bindings to a modern layout:
+
+| Action | Stock | Modern |
+|---|---|---|
+| Mercenary fire | LB | **RT** |
+| Mercenary alt fire | RB | **LT** |
+| Mercenary sprint | Back | LB |
+| Mercenary gadget | Start | RB |
+| Spy weapon | LB | **RT** |
+| Spy "Run away" | not bound | **LB** |
+
+As with WASD, only bindings that still have the stock value are changed. Unticking it puts them back.
+
+**Start (Menu) opens the in-game Esc menu** (and closes it again). It sends an Esc key press, only
+while the game window is in front.
+
+`[Controller]` in `SCDA_P2P.ini`: `XInput=0` turns the bridge off, `TriggerThreshold=30` (0-255) sets
+how far a trigger must be pulled to count as pressed, `StartIsEscape=0` stops Start acting as Esc.
 
 Shortcut tip: `SCDA_P2P_Launcher.exe --play` skips the window and goes straight to the game
 with the saved network ID.

@@ -121,7 +121,7 @@ namespace ScdaP2P
         ComboBox txtNetwork;
         TextBox txtLog;
         Label lblNode;
-        CheckBox chkCloseApp, chkWasd;
+        CheckBox chkCloseApp, chkWasd, chkPad;
         ComboBox cboMode, cboRes;
         Button btnPlay, btnCopy;
         string sysDir, gameExe;
@@ -138,7 +138,7 @@ namespace ScdaP2P
 
             Text = "Splinter Cell Double Agent - P2P Launcher";
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false;
-            ClientSize = new Size(520, 512); Font = new Font("Segoe UI", 9f);
+            ClientSize = new Size(520, 538); Font = new Font("Segoe UI", 9f);
             StartPosition = FormStartPosition.CenterScreen;
             try { Icon = Icon.ExtractAssociatedIcon(gameExe); } catch { }
 
@@ -160,7 +160,7 @@ namespace ScdaP2P
                                          Checked = Ini.GetBool("Launcher", "CloseZeroTierApp", true) };
             Controls.Add(chkCloseApp);
 
-            var grp = new GroupBox { Text = "Game settings (applied when you press PLAY)", Left = 12, Top = 98, Width = 496, Height = 104 };
+            var grp = new GroupBox { Text = "Game settings (applied when you press PLAY)", Left = 12, Top = 98, Width = 496, Height = 130 };
             grp.Controls.Add(new Label { Text = "Display:", Left = 10, Top = 26, AutoSize = true });
             cboMode = new ComboBox { Left = 80, Top = 22, Width = 150, DropDownStyle = ComboBoxStyle.DropDownList };
             cboMode.Items.AddRange(new object[] { "Borderless window", "Fullscreen", "Window" });
@@ -168,21 +168,23 @@ namespace ScdaP2P
             cboRes = new ComboBox { Left = 330, Top = 22, Width = 150, DropDownStyle = ComboBoxStyle.DropDownList };
             chkWasd = new CheckBox { Text = "WASD movement (the game ships with the French Z/Q/S/D layout)", Left = 10, Top = 58, Width = 476,
                                      Checked = Ini.GetBool("Controls", "WASD", true) };
-            grp.Controls.AddRange(new Control[] { cboMode, cboRes, chkWasd });
+            chkPad = new CheckBox { Text = "Xbox controller: RT fire, LT alt fire, LB sprint / spy run away, RB gadget", Left = 10, Top = 84, Width = 476,
+                                    Checked = Ini.GetBool("Controls", "ModernPad", true) };
+            grp.Controls.AddRange(new Control[] { cboMode, cboRes, chkWasd, chkPad });
             Controls.Add(grp);
             FillDisplayChoices();
 
-            btnPlay = new Button { Text = "PLAY", Left = 12, Top = 212, Width = 496, Height = 40, Font = new Font("Segoe UI", 12f, FontStyle.Bold) };
+            btnPlay = new Button { Text = "PLAY", Left = 12, Top = 238, Width = 496, Height = 40, Font = new Font("Segoe UI", 12f, FontStyle.Bold) };
             btnPlay.Click += (s, e) => StartPlay();
             Controls.Add(btnPlay);
 
-            txtLog = new TextBox { Left = 12, Top = 262, Width = 496, Height = 216, Multiline = true, ReadOnly = true,
+            txtLog = new TextBox { Left = 12, Top = 288, Width = 496, Height = 216, Multiline = true, ReadOnly = true,
                                    ScrollBars = ScrollBars.Vertical, BackColor = Color.Black, ForeColor = Color.LightGreen,
                                    Font = new Font("Consolas", 8.5f) };
             Controls.Add(txtLog);
 
             Controls.Add(new Label { Text = "Developed by Deceitful Gaming | Tech  x  Claude Code",
-                                     Left = 12, Top = 486, Width = 496, Height = 18, TextAlign = ContentAlignment.MiddleCenter,
+                                     Left = 12, Top = 512, Width = 496, Height = 18, TextAlign = ContentAlignment.MiddleCenter,
                                      ForeColor = Color.DimGray, Font = new Font("Segoe UI", 8.5f, FontStyle.Italic) });
 
             Shown += (s, e) => OnShownInit();
@@ -198,7 +200,7 @@ namespace ScdaP2P
         {
             if (InvokeRequired) { BeginInvoke(new Action<bool>(SetBusy), busy); return; }
             btnPlay.Enabled = !busy; txtNetwork.Enabled = !busy;
-            chkCloseApp.Enabled = cboMode.Enabled = cboRes.Enabled = chkWasd.Enabled = !busy;
+            chkCloseApp.Enabled = cboMode.Enabled = cboRes.Enabled = chkWasd.Enabled = chkPad.Enabled = !busy;
             if (busy) WindowState = FormWindowState.Minimized; else { WindowState = FormWindowState.Normal; Activate(); }
         }
 
@@ -253,6 +255,7 @@ namespace ScdaP2P
             Ini.Set("Display", "Mode", Convert.ToString(cboMode.SelectedItem));
             Ini.Set("Display", "Resolution", cboRes.SelectedIndex <= 0 ? "" : Convert.ToString(cboRes.SelectedItem));
             Ini.Set("Controls", "WASD", chkWasd.Checked ? "1" : "0");
+            Ini.Set("Controls", "ModernPad", chkPad.Checked ? "1" : "0");
         }
 
         // ---- network ID: saved next to the game and in %APPDATA% as a backup
@@ -393,7 +396,8 @@ namespace ScdaP2P
                 if (!File.Exists(gameExe)) throw new Exception("Game not found: " + gameExe);
                 Log("Launching " + Path.GetFileName(gameExe) + "... (choose LAN in the multiplayer menu)");
                 try { GameSettings.Apply(sysDir, Ini.Get("Display", "Mode", "Borderless window"),
-                                         Ini.Get("Display", "Resolution", ""), Ini.GetBool("Controls", "WASD", true), Log); }
+                                         Ini.Get("Display", "Resolution", ""), Ini.GetBool("Controls", "WASD", true),
+                                         Ini.GetBool("Controls", "ModernPad", true), Log); }
                 catch (Exception ex) { Log("Game settings not applied: " + ex.Message); }
                 SetBusy(true);
                 gameStarted = true;
@@ -547,7 +551,7 @@ namespace ScdaP2P
             return list;
         }
 
-        public static void Apply(string sysDir, string mode, string res, bool wasd, Action<string> log)
+        public static void Apply(string sysDir, string mode, string res, bool wasd, bool modernPad, Action<string> log)
         {
             var m = Regex.Match(res ?? "", @"^(\d+)x(\d+)$");
             if (!m.Success) m = Regex.Match(NativeResolution(), @"^(\d+)x(\d+)$");
@@ -586,26 +590,48 @@ namespace ScdaP2P
             var profiles = new List<string> { Path.Combine(sysDir, "PlayerProfilePC.ini") };
             string saves = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), @"Ubisoft\SplinterCell4\Save\Online");
             if (Directory.Exists(saves)) profiles.AddRange(Directory.GetFiles(saves, "PlayerProfilePC_*.ini"));
-            foreach (var f in profiles) if (File.Exists(f) && SetWasd(f, wasd)) changed++;
-            if (changed > 0) log((wasd ? "WASD" : "Z/Q/S/D") + " movement set in " + changed + " profile file(s).");
+            foreach (var f in profiles) if (File.Exists(f) && SetBindings(f, wasd, modernPad)) changed++;
+            if (changed > 0)
+                log("Controls updated in " + changed + " profile file(s): " + (wasd ? "WASD" : "Z/Q/S/D") + " movement, " +
+                    (modernPad ? "modern controller layout (fire on RT)" : "original controller layout") + ".");
         }
 
-        // Only swaps keys that still have the stock value, so custom bindings are left alone.
-        public static bool SetWasd(string file, bool wasd)
+        // { action, field ("Keys" = first keyboard key, "Joy" = controller button), stock value, new value }
+        static readonly string[,] WasdMap = {
+            { "MoveForward", "Keys", "IK_Z", "IK_W" }, { "MoveLeft", "Keys", "IK_Q", "IK_A" }, { "Berzerk", "Keys", "IK_A", "IK_Q" } };
+        // Xbox pad through the XInput bridge: Joy5 LB, Joy6 RB, Joy7 Back, Joy8 Start, Joy11 LT, Joy12 RT
+        static readonly string[,] PadMap = {
+            { "PrimaryFire", "Joy", "IK_Joy5", "IK_Joy12" },      // mercenary fire: LB -> RT
+            { "SecondaryFire", "Joy", "IK_Joy6", "IK_Joy11" },    // mercenary alt fire: RB -> LT
+            { "Sprint", "Joy", "IK_Joy7", "IK_Joy5" },            // sprint: Back -> LB
+            { "UseGadgetMerc", "Joy", "IK_Joy8", "IK_Joy6" },     // mercenary gadget: Start -> RB
+            { "DrawWeapon", "Joy", "IK_Joy5", "IK_Joy12" },       // spy weapon: LB -> RT
+            { "Escape", "Joy", "", "IK_Joy5" } };                 // spy "Run away": unbound -> LB
+        // (Start opens the Esc menu: handled by the XInput bridge in dinput8.dll)
+
+        // Only swaps bindings that still have the stock (or our) value, so custom bindings are left alone.
+        public static bool SetBindings(string file, bool wasd, bool modernPad)
         {
             string text = File.ReadAllText(file, Raw), orig = text;
-            string[,] map = { { "MoveForward", "IK_Z", "IK_W" }, { "MoveLeft", "IK_Q", "IK_A" }, { "Berzerk", "IK_A", "IK_Q" } };
-            for (int i = 0; i < map.GetLength(0); i++)
-            {
-                string from = wasd ? map[i, 1] : map[i, 2], to = wasd ? map[i, 2] : map[i, 1];
-                var rx = new Regex(@"(?m)^(PCBindings=\(ActionName[^=]*=""" + map[i, 0] + @"""[^\r\n]*?Keys[^\[\r\n]*\[0\]="")" + from + @"""");
-                text = rx.Replace(text, "${1}" + to + "\"", 1);
-            }
+            text = Swap(text, WasdMap, wasd);
+            text = Swap(text, PadMap, modernPad);
             if (text == orig) return false;
             string backup = file + ".scdap2p-backup";
             if (!File.Exists(backup)) File.WriteAllText(backup, orig, Raw);
             File.WriteAllText(file, text, Raw);
             return true;
+        }
+
+        static string Swap(string text, string[,] map, bool apply)
+        {
+            for (int i = 0; i < map.GetLength(0); i++)
+            {
+                string field = map[i, 1] == "Keys" ? @"Keys[^\[\r\n]*\[0\]" : @",Joy[^=,\r\n]*";
+                string from = apply ? map[i, 2] : map[i, 3], to = apply ? map[i, 3] : map[i, 2];
+                var rx = new Regex(@"(?m)^(PCBindings=\(ActionName[^=]*=""" + map[i, 0] + @"""[^\r\n]*?" + field + @"="")" + from + @"""");
+                text = rx.Replace(text, "${1}" + to + "\"", 1);
+            }
+            return text;
         }
     }
 
