@@ -1,0 +1,8 @@
+# build output (release zips go to GitHub Releases, not git)
+dist/
+*.obj
+*.exp
+*.lib
+*.pdb
+# runtime files
+SCDA_P2P.log
