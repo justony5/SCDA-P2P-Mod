@@ -67,6 +67,29 @@ Uninstall: delete those files.
 Options in the launcher:
 - *Close the ZeroTier app when the game closes* – closes only the tray app. The ZeroTier service is never stopped or changed, so ZeroTier keeps working for anything else.
 
+## Game settings (in the launcher)
+Applied every time you press **PLAY**:
+- **Display:** *Borderless window* (default), *Fullscreen* or *Window*.
+- **Resolution:** *Native* (your monitor's real resolution, default) or any mode your monitor supports,
+  including 1920x1080, 2560x1440 and 3840x2160.
+- **WASD movement:** the game ships with a French keyboard layout (Z/Q/S/D to move, A for Berzerk).
+  This switches movement to W/A/S/D and moves Berzerk to Q. Only keys still on the stock layout are
+  changed, so your own rebinds are kept. Applies to the default profile and to every saved profile in
+  `C:\ProgramData\Ubisoft\SplinterCell4\Save\Online`.
+
+What `dinput8.dll` adds on the game side (`[Display]` in `SCDA_P2P.ini`):
+- `DpiAware=1`: the game renders at the real screen resolution even with Windows display scaling
+  (otherwise a 4K screen at 150% gets a blurry 2560x1440 image).
+- `ModernResolutions=1`: the in-game video menu lists modes your monitor supports (up to 3840x2160)
+  instead of the original 640x400 to 1600x1200.
+- `Borderless=1` (set by the launcher): turns the game window into a borderless window covering the monitor.
+
+The first time, the original files are saved as `Default.ini.scdap2p-backup` and
+`PlayerProfilePC_<name>.ini.scdap2p-backup`.
+
+Controller: the stock axis mapping already matches an Xbox-style pad. Triggers are not usable as
+buttons (the game uses old DirectInput, which reports both triggers as one axis).
+
 Shortcut tip: `SCDA_P2P_Launcher.exe --play` skips the window and goes straight to the game
 with the saved network ID.
 

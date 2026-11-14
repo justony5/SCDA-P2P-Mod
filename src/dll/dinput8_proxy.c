@@ -490,6 +490,159 @@ static int patch_iat(HMODULE mod, const char *dllName, const char *funcName, WOR
     return patched;
 }
 
+/* ------------------------------------------------------------ display */
+/* [Display] section of SCDA_P2P.ini:
+ *   Borderless=1        restyle the game's window into a borderless window covering its monitor
+ *   ModernResolutions=1 replace the 9 hardcoded resolutions of the in-game video menu
+ *                       (640x400 ... 1600x1200) with modes this PC's monitor supports. */
+
+/* SCDA_online.exe 1.02a: each menu entry is added by "mov edi, <wide string>" (opcode BF). */
+static const DWORD g_resSites[9] = {
+    0x10c508ce, 0x10c50987, 0x10c50a95, 0x10c50b5d, 0x10c50c1a,
+    0x10c50ce2, 0x10c50d9f, 0x10c50e67, 0x10c50f24 };
+static const DWORD g_resOrig[9] = {
+    0x10f505e8, 0x10f505f8, 0x10f50608, 0x10f50618, 0x10f50628,
+    0x10f5063c, 0x10f50650, 0x10f50664, 0x10f50678 };
+static wchar_t g_resText[9][16];
+
+static int res_cmp(const void *a, const void *b)
+{
+    const DWORD *x = (const DWORD *)a, *y = (const DWORD *)b;   /* packed w<<16|h */
+    return (*x > *y) - (*x < *y);
+}
+
+static void patch_menu_resolutions(void)
+{
+    static const DWORD preferred[] = {   /* w<<16 | h */
+        (1280u<<16)|720, (1366u<<16)|768, (1600u<<16)|900, (1680u<<16)|1050, (1920u<<16)|1080,
+        (1920u<<16)|1200, (2560u<<16)|1080, (2560u<<16)|1440, (2560u<<16)|1600, (3440u<<16)|1440,
+        (3840u<<16)|1600, (3840u<<16)|2160, (5120u<<16)|1440, (5120u<<16)|2160 };
+    DWORD supported[256], list[9], native;
+    int nsup = 0, nlist = 0, i, j, start;
+    DEVMODEA dm;
+    BYTE *code;
+    DWORD old;
+
+    /* 1. modes the primary monitor supports */
+    memset(&dm, 0, sizeof(dm)); dm.dmSize = sizeof(dm);
+    for (i = 0; EnumDisplaySettingsA(NULL, i, &dm) && nsup < 256; i++) {
+        DWORD m = (dm.dmPelsWidth << 16) | dm.dmPelsHeight;
+        if (dm.dmBitsPerPel < 32) continue;
+        for (j = 0; j < nsup && supported[j] != m; j++) ;
+        if (j == nsup) supported[nsup++] = m;
+    }
+    memset(&dm, 0, sizeof(dm)); dm.dmSize = sizeof(dm);
+    EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm);
+    native = (dm.dmPelsWidth << 16) | dm.dmPelsHeight;
+
+    /* 2. native + supported preferred modes, largest first, max 9 */
+    list[nlist++] = native;
+    for (i = (int)(sizeof(preferred) / sizeof(preferred[0])) - 1; i >= 0 && nlist < 9; i--) {
+        if (preferred[i] == native || preferred[i] > native) continue;
+        for (j = 0; j < nsup && supported[j] != preferred[i]; j++) ;
+        if (j < nsup) list[nlist++] = preferred[i];
+    }
+    qsort(list, nlist, sizeof(DWORD), res_cmp);
+
+    /* 3. verify the code is what we expect, then point the last nlist entries at our strings */
+    code = (BYTE *)g_resSites[0];
+    for (i = 0; i < 9; i++) {
+        BYTE *p = (BYTE *)g_resSites[i];
+        if (IsBadReadPtr(p, 5) || p[0] != 0xBF || *(DWORD *)(p + 1) != g_resOrig[i]) {
+            logf("Menu resolutions: game code not as expected (different game version?) - not changed");
+            return;
+        }
+    }
+    start = 9 - nlist;               /* unused leading slots keep the game's own small modes */
+    for (i = 0; i < nlist; i++) {
+        BYTE *p = (BYTE *)g_resSites[start + i];
+        swprintf_s(g_resText[i], 16, L"%ux%u", (unsigned)(list[i] >> 16), (unsigned)(list[i] & 0xFFFF));
+        if (VirtualProtect(p + 1, 4, PAGE_EXECUTE_READWRITE, &old)) {
+            *(DWORD *)(p + 1) = (DWORD)(ULONG_PTR)g_resText[i];
+            VirtualProtect(p + 1, 4, old, &old);
+        }
+    }
+    FlushInstructionCache(GetCurrentProcess(), code, 0x700);
+    {
+        char buf[256] = ""; size_t k;
+        for (i = 0; i < nlist; i++) {
+            k = strlen(buf);
+            sprintf_s(buf + k, sizeof(buf) - k, "%s%ux%u", i ? ", " : "", (unsigned)(list[i] >> 16), (unsigned)(list[i] & 0xFFFF));
+        }
+        logf("Menu resolutions: %s", buf);
+    }
+}
+
+static DWORD g_pid;
+static HWND  g_foundWnd;
+
+static BOOL CALLBACK find_game_window(HWND h, LPARAM lp)
+{
+    DWORD pid = 0; RECT r;
+    (void)lp;
+    GetWindowThreadProcessId(h, &pid);
+    if (pid != g_pid || !IsWindowVisible(h) || GetWindow(h, GW_OWNER)) return TRUE;
+    GetWindowRect(h, &r);
+    if (r.right - r.left < 320 || r.bottom - r.top < 200) return TRUE;   /* skip splash/tool windows */
+    g_foundWnd = h;
+    return FALSE;
+}
+
+static DWORD WINAPI borderless_thread(LPVOID unused)
+{
+    int announced = 0;
+    (void)unused;
+    g_pid = GetCurrentProcessId();
+    for (;;) {
+        Sleep(500);
+        g_foundWnd = NULL;
+        EnumWindows(find_game_window, 0);
+        if (g_foundWnd) {
+            HWND h = g_foundWnd;
+            LONG style = GetWindowLongA(h, GWL_STYLE), ex = GetWindowLongA(h, GWL_EXSTYLE);
+            MONITORINFO mi; RECT r;
+            mi.cbSize = sizeof(mi);
+            GetMonitorInfoA(MonitorFromWindow(h, MONITOR_DEFAULTTOPRIMARY), &mi);
+            GetWindowRect(h, &r);
+            if (IsIconic(h)) continue;
+            if ((style & (WS_CAPTION | WS_THICKFRAME)) ||
+                r.left != mi.rcMonitor.left || r.top != mi.rcMonitor.top ||
+                r.right != mi.rcMonitor.right || r.bottom != mi.rcMonitor.bottom) {
+                SetWindowLongA(h, GWL_STYLE, (style & ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU |
+                                              WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_BORDER | WS_DLGFRAME)) | WS_POPUP);
+                SetWindowLongA(h, GWL_EXSTYLE, ex & ~(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE |
+                                                       WS_EX_STATICEDGE | WS_EX_WINDOWEDGE));
+                SetWindowPos(h, NULL, mi.rcMonitor.left, mi.rcMonitor.top,
+                             mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top,
+                             SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                if (!announced++)
+                    logf("Borderless: window resized to %ldx%ld", mi.rcMonitor.right - mi.rcMonitor.left,
+                         mi.rcMonitor.bottom - mi.rcMonitor.top);
+            }
+        }
+    }
+}
+
+static void display_init(void)
+{
+    /* Without this, Windows display scaling (e.g. 150% on a 4K screen) makes Windows render the
+     * game at a lower "virtual" resolution and stretch it. Must run before the game makes its window. */
+    if (GetPrivateProfileIntA("Display", "DpiAware", 1, g_iniPath)) {
+        typedef BOOL (WINAPI *SetDpiCtx_t)(HANDLE);
+        SetDpiCtx_t setCtx = (SetDpiCtx_t)GetProcAddress(GetModuleHandleA("user32.dll"), "SetProcessDpiAwarenessContext");
+        BOOL ok = setCtx ? setCtx((HANDLE)-4 /* PER_MONITOR_AWARE_V2 */) : FALSE;
+        if (!ok) ok = SetProcessDPIAware();
+        logf("DPI aware: %s", ok ? "yes (game renders at the real screen resolution)" : "failed");
+    }
+    if (GetPrivateProfileIntA("Display", "ModernResolutions", 1, g_iniPath))
+        patch_menu_resolutions();
+    if (GetPrivateProfileIntA("Display", "Borderless", 0, g_iniPath)) {
+        HANDLE t = CreateThread(NULL, 0, borderless_thread, NULL, 0, NULL);
+        if (t) CloseHandle(t);
+        logf("Borderless window mode on");
+    }
+}
+
 /* ------------------------------------------------------------ startup */
 static void init(HMODULE self)
 {
@@ -515,6 +668,8 @@ static void init(HMODULE self)
     logf("SCDA P2P loaded into %s", exePath);
     logf("Enabled=%d PreferredIP=\"%s\" AdapterMatch=\"%s\"", g_enabled, g_preferredIP, g_adapterMatch);
     (void)self;
+
+    display_init();
 
     if (!g_enabled) {
         logf("Disabled in ini; acting as plain dinput8 passthrough");

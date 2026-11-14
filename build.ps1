@@ -32,14 +32,14 @@ if ($vs) {
     $env:PATH += ";$(Split-Path $vswhere)"   # vcvarsall calls vswhere.exe from PATH
     $obj = Join-Path $env:TEMP 'scda_p2p_build'; New-Item -ItemType Directory -Force $obj | Out-Null
     $cmd = "`"$vcvars`" x86 >nul && cl /nologo /O2 /MT /W3 /D_CRT_SECURE_NO_WARNINGS /D_WINSOCK_DEPRECATED_NO_WARNINGS /Fo`"$obj\\`" /LD `"$root\src\dll\dinput8_proxy.c`" " +
-           "/link /DEF:`"$root\src\dll\dinput8_msvc.def`" /OUT:`"$dist\dinput8.dll`" /IMPLIB:`"$obj\dinput8.lib`" iphlpapi.lib ws2_32.lib"
+           "/link /DEF:`"$root\src\dll\dinput8_msvc.def`" /OUT:`"$dist\dinput8.dll`" /IMPLIB:`"$obj\dinput8.lib`" iphlpapi.lib ws2_32.lib user32.lib"
     cmd /c $cmd
     if ($LASTEXITCODE) { throw 'dinput8.dll build failed (MSVC)' }
     Write-Host 'Built dinput8.dll with MSVC (x86)'
 }
 elseif (-not $cc) { Write-Warning 'No 32-bit compiler found (Visual Studio C++ or MinGW); dinput8.dll not built.'; }
 else {
-    & $cc -O2 -shared -s -static-libgcc -o "$dist\dinput8.dll" "$root\src\dll\dinput8_proxy.c" "$root\src\dll\dinput8.def" -liphlpapi -lws2_32
+    & $cc -O2 -shared -s -static-libgcc -o "$dist\dinput8.dll" "$root\src\dll\dinput8_proxy.c" "$root\src\dll\dinput8.def" -liphlpapi -lws2_32 -luser32
     if ($LASTEXITCODE) { throw 'dinput8.dll build failed' }
     Write-Host "Built dinput8.dll with $cc"
 }
