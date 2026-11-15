@@ -22,6 +22,9 @@
  * Config: [Controller] XInput=1 (0 = leave DirectInput alone), TriggerThreshold=30 (0-255)
  */
 #include <dinput.h>
+/* math.h's logf() clashes with our logger, so declare just these two */
+double __cdecl sqrt(double);
+double __cdecl fabs(double);
 
 typedef struct { WORD wButtons; BYTE bLeftTrigger, bRightTrigger; SHORT sThumbLX, sThumbLY, sThumbRX, sThumbRY; } XGAMEPAD;
 typedef struct { DWORD dwPacketNumber; XGAMEPAD Gamepad; } XSTATE;
@@ -121,6 +124,28 @@ static void xb_start_as_escape(int pressed)
         xb_send_esc(0); sentDown = 0;
     }
     wasPressed = pressed;
+}
+
+/* Movement stick: round gate -> square gate.
+ * An Xbox stick moves inside a circle, so pushed fully diagonally each axis only reaches ~71%.
+ * The game was made for old square-gated PC pads, where a full diagonal is 100% on both axes;
+ * with 71% it barely moves (or picks a single direction). This applies a round dead zone, then
+ * stretches the circle onto the square so a full push is full speed in every direction.
+ * [Controller] SquareStick=1 (0 = raw stick), StickDeadZone=8 (percent). */
+static int g_xbSquare = 1, g_xbDeadPct = 8;
+static void xb_square_stick(SHORT ix, SHORT iy, LONG *ox, LONG *oy)
+{
+    double x = ix / 32767.0, y = iy / 32767.0, m = sqrt(x * x + y * y), dz = g_xbDeadPct / 100.0, mx, k;
+    if (!g_xbSquare) { *ox = ix; *oy = iy; return; }
+    if (x > 1) x = 1; if (x < -1) x = -1; if (y > 1) y = 1; if (y < -1) y = -1;
+    if (m <= dz || m == 0) { *ox = 0; *oy = 0; return; }
+    if (m > 1) { x /= m; y /= m; m = 1; }
+    k = (m - dz) / (1 - dz) / m;           /* rescale past the dead zone, keep direction */
+    x *= k; y *= k; m = (m - dz) / (1 - dz);
+    mx = fabs(x) > fabs(y) ? fabs(x) : fabs(y);
+    if (mx > 0) { x *= m / mx; y *= m / mx; } /* circle -> square: longest axis = stick distance */
+    if (x > 1) x = 1; if (x < -1) x = -1; if (y > 1) y = 1; if (y < -1) y = -1;
+    *ox = (LONG)(x * 32767.0); *oy = (LONG)(y * 32767.0);
 }
 
 static LONG xb_scale(LONG v /* -32768..32767 */, const XBDEV *d)
@@ -235,10 +260,12 @@ static int xb_fill(XBDEV *d, DWORD cb, LPVOID data)
         WORD b = g->wButtons;
         BYTE btn[16];
         LONG axes[7];
-        LONG ly = -(LONG)g->sThumbLY - 1, ry = -(LONG)g->sThumbRY - 1;   /* XInput up = +, DirectInput up = - */
+        LONG lx, ly, ry = -(LONG)g->sThumbRY - 1;   /* XInput up = +, DirectInput up = - */
+        xb_square_stick(g->sThumbLX, g->sThumbLY, &lx, &ly);
+        ly = -ly - 1;
         if (ly < -32768) ly = -32768;
         if (ry < -32768) ry = -32768;
-        axes[0] = xb_scale(g->sThumbLX, d);
+        axes[0] = xb_scale(lx, d);
         axes[1] = xb_scale(ly, d);
         axes[2] = xb_scale(0, d);
         axes[3] = xb_scale(g->sThumbRX, d);
@@ -621,6 +648,10 @@ static void *xb_wrap_dinput(void *di, REFIID riid)
         HMODULE x;
         initDone = 1;
         g_xbVirtual = GetPrivateProfileIntA("Controller", "VirtualPad", 1, g_iniPath);
+        g_xbSquare = GetPrivateProfileIntA("Controller", "SquareStick", 1, g_iniPath);
+        g_xbDeadPct = GetPrivateProfileIntA("Controller", "StickDeadZone", 8, g_iniPath);
+        if (g_xbDeadPct < 0) g_xbDeadPct = 0; if (g_xbDeadPct > 50) g_xbDeadPct = 50;
+        logf("Controller: movement stick %s, dead zone %d%%", g_xbSquare ? "square (full speed on diagonals)" : "raw", g_xbDeadPct);
         g_xbEnabled = GetPrivateProfileIntA("Controller", "XInput", 1, g_iniPath);
         g_xbThreshold = GetPrivateProfileIntA("Controller", "TriggerThreshold", 30, g_iniPath);
         g_xbStartEsc = GetPrivateProfileIntA("Controller", "StartIsEscape", 1, g_iniPath);

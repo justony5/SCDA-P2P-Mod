@@ -112,7 +112,9 @@ one axis and can't be bound. `dinput8.dll` now feeds the game's controller from 
 | **Joy11 / Joy12** | **LT / RT** |
 | Joy13-Joy16 | D-pad up, right, down, left |
 
-Sticks: left stick moves, right stick turns the camera (same axes as before). Both triggers can be
+Sticks: left stick moves, right stick turns the camera (same axes as before). The movement stick is
+stretched from its round gate to a square, so a full diagonal push is full speed (the game expects old
+square-gated pads); it has an 8% round dead zone. `SquareStick=0` / `StickDeadZone=` under `[Controller]`. Both triggers can be
 bound in the game's controls menu like any other button.
 
 Launcher option **Xbox controller: RT fire, LT alt fire, LB sprint / spy run away, RB gadget** (on by default)
