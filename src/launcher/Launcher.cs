@@ -120,7 +120,7 @@ namespace ScdaP2P
     // Updates: checks the latest GitHub release of the mod and installs its files over this one.
     static class Updater
     {
-        public const string Version = "1.0";
+        public const string Version = "1.1";
         const string Api = "https://api.github.com/repos/justony5/SCDA-P2P-Mod/releases/latest";
         public const string ReleasesPage = "https://github.com/justony5/SCDA-P2P-Mod/releases/latest";
 
@@ -869,7 +869,9 @@ namespace ScdaP2P
                         { "WindowedViewportX", w }, { "WindowedViewportY", h },
                         { "FullscreenViewportX", w }, { "FullscreenViewportY", h },
                         { "MenuViewportX", w }, { "MenuViewportY", h },
-                        { "StartupFullscreen", full ? "True" : "False" } };
+                        { "StartupFullscreen", full ? "True" : "False" },
+                        // with UseJoystick=False the game never opens a controller at all
+                        { "UseJoystick", "True" } };
                     foreach (var kv in values)
                     {
                         var line = new Regex(@"(?m)^" + kv.Key + @"=[^\r\n]*");

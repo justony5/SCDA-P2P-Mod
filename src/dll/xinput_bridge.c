@@ -569,6 +569,10 @@ static HRESULT STDMETHODCALLTYPE DI_EnumDevices(void *s, A typeA, A cbA, A ref, 
     HRESULT hr;
     int wantsPad = type == DI8DEVCLASS_ALL || type == DI8DEVCLASS_GAMECTRL ||
                    type == DI8DEVTYPE_GAMEPAD || type == DI8DEVTYPE_JOYSTICK;
+    {
+        static int seen;
+        if (seen < 4) { seen++; logf("Controller: game lists DirectInput devices (type %lu, flags 0x%lx)", type, flags); }
+    }
     if (!cbA || !g_xbVirtual || !wantsPad || (flags & (DIEDFL_FORCEFEEDBACK | DIEDFL_INCLUDEHIDDEN)))
         return ((F4)RV(s, 4))(REAL(s), typeA, cbA, ref, flagsA);
     c.cb = (ENUMCB)cbA; c.ref = (void *)ref; c.gamectrl = 0; c.stopped = 0;
@@ -628,6 +632,10 @@ static void *xb_wrap_dinput(void *di, REFIID riid)
         if (!g_xget) { logf("Controller: XInput not available"); return di; }
     }
     if (!g_xbEnabled || !g_xget || !di) return di;
+    {
+        static int created;
+        if (!created++) logf("Controller: game created DirectInput (%s); waiting for it to look for a controller", g_diIsW ? "W" : "A");
+    }
     w = (WRAP *)malloc(sizeof(WRAP));
     if (!w) return di;
     w->vtbl = g_diVtbl; w->real = di;

@@ -425,8 +425,9 @@ static void stats_note(const struct sockaddr_in *p, int isSend, int failed)
 static DWORD WINAPI stats_thread(LPVOID unused)
 {
     (void)unused;
+    int activePrev = 0;
     for (;;) {
-        int i;
+        int i, active = 0;
         DWORD now;
         Sleep(g_statsSecs * 1000);
         now = GetTickCount();
@@ -436,6 +437,7 @@ static DWORD WINAPI stats_thread(LPVOID unused)
             struct in_addr a; char ip[32];
             double quiet = ps->lastRecv ? (now - ps->lastRecv) / 1000.0 : -1;
             if (!ps->sent && !ps->recv && !ps->failed) continue;     /* not talking to this one now */
+            if (ps->sent > 20) active++;
             a.s_addr = ps->ip; strcpy_s(ip, sizeof(ip), inet_ntoa(a));
             if (quiet < 0)
                 logf("STATS %-15s sent %4ld  recv %4ld  failed %ld  (never answered)", ip, ps->sent, ps->recv, ps->failed);
@@ -447,6 +449,10 @@ static DWORD WINAPI stats_thread(LPVOID unused)
             }
             ps->sent = ps->recv = ps->failed = 0;
         }
+        if (activePrev >= 1 && active == 0)
+            logf("STATS: match traffic stopped with every player at once, including what this PC sends: "
+                 "the game left the match, was kicked, froze or is closing (not a network drop)");
+        activePrev = active;
         LeaveCriticalSection(&g_peerLock);
     }
 }
@@ -728,6 +734,21 @@ static void display_init(void)
     }
 }
 
+/* ------------------------------------------------------------ crash note */
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep)
+{
+    HMODULE mod = NULL;
+    char name[MAX_PATH] = "?";
+    void *addr = ep->ExceptionRecord->ExceptionAddress;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)addr, &mod) && mod)
+        GetModuleFileNameA(mod, name, MAX_PATH);
+    logf("GAME CRASHED: exception 0x%08lx at %p (%s +0x%lx)", (unsigned long)ep->ExceptionRecord->ExceptionCode,
+         addr, strrchr(name, '\\') ? strrchr(name, '\\') + 1 : name,
+         (unsigned long)((ULONG_PTR)addr - (ULONG_PTR)mod));
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 /* ------------------------------------------------------------ startup */
 static void init(HMODULE self)
 {
@@ -752,6 +773,7 @@ static void init(HMODULE self)
     GetPrivateProfileStringA("P2P", "Peers", "", g_peers, sizeof(g_peers), g_iniPath);
 
     logf("SCDA P2P loaded into %s", exePath);
+    SetUnhandledExceptionFilter(crash_filter);
     logf("Enabled=%d PreferredIP=\"%s\" AdapterMatch=\"%s\"", g_enabled, g_preferredIP, g_adapterMatch);
     (void)self;
 
@@ -813,6 +835,10 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID reserved)
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(h);
         init(h);
+    } else if (reason == DLL_PROCESS_DETACH) {
+        /* no lock here: at exit other threads are already gone and may have died holding it */
+        FILE *f = fopen(g_logPath, "a");
+        if (f) { SYSTEMTIME t; GetLocalTime(&t); fprintf(f, "[%02d:%02d:%02d] Game closed (normal exit)\n", t.wHour, t.wMinute, t.wSecond); fclose(f); }
     }
     return TRUE;
 }
