@@ -6,3 +6,6 @@ dist/
 *.pdb
 # runtime files
 SCDA_P2P.log
+
+# bundled third-party installer (package.ps1 downloads it if missing)
+redist/

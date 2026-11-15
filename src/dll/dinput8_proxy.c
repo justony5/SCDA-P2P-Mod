@@ -109,7 +109,7 @@ HRESULT WINAPI Proxy_DirectInput8Create(HINSTANCE h, DWORD v, REFIID r, LPVOID *
 {
     DirectInput8Create_t fn = (DirectInput8Create_t)real_proc("DirectInput8Create");
     HRESULT hr = fn ? fn(h, v, r, o, u) : E_FAIL;
-    if (SUCCEEDED(hr) && o && *o) *o = xb_wrap_dinput(*o);
+    if (SUCCEEDED(hr) && o && *o) *o = xb_wrap_dinput(*o, r);
     return hr;
 }
 HRESULT WINAPI Proxy_DllCanUnloadNow(void)
@@ -374,13 +374,92 @@ static WSARecvFrom_t g_realWSARecvFrom;
 static int           g_traceMax = 300;      /* [P2P] TraceLines=, 0 disables */
 static volatile LONG g_traceCount;
 
+/* ------------------------------------------------- per-player traffic summary
+ * Every StatsSeconds the log gets one line per player with packets sent/received in that interval
+ * and how long ago that player last answered, so a dropped connection shows who went quiet. */
+#define MAX_PEERS 32
+typedef struct {
+    ULONG ip;                               /* network order */
+    LONG sent, recv, failed;                /* this interval */
+    LONG sentTotal, recvTotal;
+    DWORD lastRecv, lastSend;               /* GetTickCount, 0 = never */
+    int silentWarned;
+} PEERSTAT;
+static PEERSTAT g_pstat[MAX_PEERS];
+static int g_peerCount;
+static CRITICAL_SECTION g_peerLock;
+static int g_statsSecs = 5;                 /* [P2P] StatsSeconds=, 0 disables */
+
+static void stats_note(const struct sockaddr_in *p, int isSend, int failed)
+{
+    ULONG h = ntohl(p->sin_addr.s_addr);
+    int i;
+    DWORD now = GetTickCount();
+    if (!g_statsSecs || (h & 0xff) == 0xff || h == 0) return;     /* broadcasts */
+    if (p->sin_addr.s_addr == g_ownIP) return;
+    if (g_ownMask && (p->sin_addr.s_addr & g_ownMask) != (g_ownIP & g_ownMask)) return;   /* not a ZeroTier player */
+    if ((p->sin_addr.s_addr | g_ownMask) == 0xffffffff) return;                          /* subnet broadcast */
+    EnterCriticalSection(&g_peerLock);
+    for (i = 0; i < g_peerCount && g_pstat[i].ip != p->sin_addr.s_addr; i++) ;
+    if (i == g_peerCount && g_peerCount < MAX_PEERS) {
+        memset(&g_pstat[i], 0, sizeof(g_pstat[i]));
+        g_pstat[i].ip = p->sin_addr.s_addr;
+        g_peerCount++;
+    }
+    if (i < g_peerCount) {
+        PEERSTAT *ps = &g_pstat[i];
+        if (failed) ps->failed++;
+        else if (isSend) { ps->sent++; ps->sentTotal++; ps->lastSend = now; }
+        else {
+            if (ps->silentWarned) {
+                logf("STATS %s answering again after %.1f s", inet_ntoa(p->sin_addr),
+                     ps->lastRecv ? (now - ps->lastRecv) / 1000.0 : 0.0);
+                ps->silentWarned = 0;
+            }
+            ps->recv++; ps->recvTotal++; ps->lastRecv = now;
+        }
+    }
+    LeaveCriticalSection(&g_peerLock);
+}
+
+static DWORD WINAPI stats_thread(LPVOID unused)
+{
+    (void)unused;
+    for (;;) {
+        int i;
+        DWORD now;
+        Sleep(g_statsSecs * 1000);
+        now = GetTickCount();
+        EnterCriticalSection(&g_peerLock);
+        for (i = 0; i < g_peerCount; i++) {
+            PEERSTAT *ps = &g_pstat[i];
+            struct in_addr a; char ip[32];
+            double quiet = ps->lastRecv ? (now - ps->lastRecv) / 1000.0 : -1;
+            if (!ps->sent && !ps->recv && !ps->failed) continue;     /* not talking to this one now */
+            a.s_addr = ps->ip; strcpy_s(ip, sizeof(ip), inet_ntoa(a));
+            if (quiet < 0)
+                logf("STATS %-15s sent %4ld  recv %4ld  failed %ld  (never answered)", ip, ps->sent, ps->recv, ps->failed);
+            else
+                logf("STATS %-15s sent %4ld  recv %4ld  failed %ld  last answer %.1f s ago", ip, ps->sent, ps->recv, ps->failed, quiet);
+            if (ps->sent && ps->sentTotal > 20 && quiet >= 3.0 && !ps->silentWarned) {
+                logf("STATS WARNING: %s stopped answering (%.1f s with no packets back)", ip, quiet);
+                ps->silentWarned = 1;
+            }
+            ps->sent = ps->recv = ps->failed = 0;
+        }
+        LeaveCriticalSection(&g_peerLock);
+    }
+}
+
 static void trace(const char *dir, SOCKET s, const struct sockaddr *peer, int bytes)
 {
     const struct sockaddr_in *p = (const struct sockaddr_in *)peer;
     struct sockaddr_in local; int ll = sizeof(local);
     char peerStr[32];
-    if (!g_traceMax || !peer || p->sin_family != AF_INET || bytes < 0) return;
+    if (!peer || p->sin_family != AF_INET || bytes < 0) return;
     if ((ntohl(p->sin_addr.s_addr) >> 24) == 127) return;                 /* loopback */
+    stats_note(p, dir[0] == 's', dir[5] == 'F');
+    if (!g_traceMax) return;
     if (InterlockedIncrement(&g_traceCount) > g_traceMax) return;
     memset(&local, 0, sizeof(local));
     getsockname(s, (struct sockaddr *)&local, &ll);
@@ -658,6 +737,7 @@ static void init(HMODULE self)
 
     InitializeCriticalSection(&g_logLock);
     InitializeCriticalSection(&g_fanoutLock);
+    InitializeCriticalSection(&g_peerLock);
     GetModuleFileNameA(NULL, exePath, MAX_PATH);
     strcpy_s(g_dir, MAX_PATH, exePath);
     slash = strrchr(g_dir, '\\');
@@ -718,6 +798,12 @@ static void init(HMODULE self)
         if (g_realWSARecvFrom)
             b = patch_iat(exe, "ws2_32.dll", "WSARecvFrom", 0, (void *)Hook_WSARecvFrom, NULL);
         logf("Traffic log: %d line(s) max; patched %d recvfrom and %d WSARecvFrom import(s)", g_traceMax, a, b);
+        g_statsSecs = GetPrivateProfileIntA("P2P", "StatsSeconds", 5, g_iniPath);
+        if (g_statsSecs > 0) {
+            HANDLE t = CreateThread(NULL, 0, stats_thread, NULL, 0, NULL);
+            if (t) CloseHandle(t);
+            logf("Player traffic summary every %d s (STATS lines)", g_statsSecs);
+        }
     }
 }
 

@@ -39,6 +39,7 @@ return to single player, which can't work without the single-player files.
 | `SCDA_P2P_Launcher.exe` | Starts ZeroTier, joins your network, starts the game, cleans up when the game closes |
 | `dinput8.dll` | Adapter fix. Loaded by the game automatically; forwards DirectInput to Windows |
 | `SCDA_P2P.ini` | Settings (network ID, chosen IP, options) |
+| `Redist\ZeroTierOne.msi` | The official, unmodified ZeroTier One installer (signed by ZeroTier, Inc.), bundled the way games bundle DirectX |
 | `SCDA_P2P.log` | Written by `dinput8.dll` each time the game starts – check it if games aren't found |
 
 Uninstall: delete those files.
@@ -49,7 +50,18 @@ Uninstall: delete those files.
    - Turn on *Enable Broadcast* in the network settings (recommended; the mod also works without it).
    - Either set *Access Control* to **Public**, or authorize each player's node ID when they join.
    - Share the 16-character **network ID** with your friends.
-2. **Every player installs ZeroTier One** from https://www.zerotier.com/download/.
+2. **Every player needs ZeroTier One.** If it isn't installed, the launcher says so when it opens and
+   offers to run the bundled installer (as administrator). You can also use the **Install ZeroTier**
+   button, or download it from https://www.zerotier.com/download/.
+
+**Updates:** when it opens, the launcher checks GitHub for a newer release and offers to install it (the
+game's files and your settings are kept; it restarts itself). There's also a **Check for updates** button.
+`[Updates] CheckOnStart=0` turns the automatic check off.
+
+The launcher also has a **ZeroTier website** button (https://www.zerotier.com/) and a
+**Multiplayer setup guide** button: step-by-step instructions for creating the network, joining it
+and authorizing players in ZeroTier Central, plus a *Copy message for players* button that copies an
+invite with your network ID filled in.
 
 ## Playing
 1. Run `SCDA_P2P_Launcher.exe` and accept the Windows administrator prompt
@@ -128,6 +140,17 @@ with the saved network ID.
 
 ## Troubleshooting
 - Open `SCDA_P2P.log`. You should see `game will use "ZeroTier Virtual Port" ip=...`.
+- **Dropped from matches:** every 5 seconds the log writes a `STATS` line per player: packets sent
+  and received, and how long since that player last answered. `STATS WARNING: ... stopped answering`
+  shows whose connection went quiet. `never answered` means that player's PC isn't letting the game's
+  traffic in (firewall, see below) or ZeroTier can't reach it. `StatsSeconds=0` under `[P2P]` turns this off.
+- **Firewall:** on every PLAY the launcher removes all inbound Windows Firewall rules for the game exe
+  and adds one allow rule. This clears the hidden *block* rules Windows creates if the "allow access"
+  prompt was ever cancelled for the game. Third-party firewalls/antivirus must be set to allow it by hand.
+- **Controller not detected** (no `Controller:` lines in the log): some XInput pads, for example
+  some ASUS ROG and other third-party or wireless pads, never appear in DirectInput, which is what the
+  game uses. The mod then gives the game a virtual "XInput Controller" read from XInput
+  (`[Controller] VirtualPad=1`, the default). The pad must be connected before the game starts.
   If it says *no adapter matched*, the game saw all adapters unchanged and the fix didn't apply.
 - "ACCESS_DENIED" in the launcher: the network admin must tick *Auth* for your node ID
   (shown in the launcher, with a Copy button).
@@ -147,3 +170,6 @@ with the saved network ID.
 - `dinput8.dll`: Visual Studio C++ tools (x86, static CRT), or a 32-bit MinGW compiler.
 
 Source: `src\launcher\Launcher.cs`, `src\dll\dinput8_proxy.c`.
+
+## Third-party software
+ZeroTier One is made by ZeroTier, Inc. (https://www.zerotier.com/) and is included unmodified under its own license. This mod is not affiliated with ZeroTier, Inc. or Ubisoft.

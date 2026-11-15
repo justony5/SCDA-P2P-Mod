@@ -64,6 +64,11 @@ function Copy-ModFiles([string]$sysDir) {
         }
         Copy-Item (Join-Path $here "System\$f") $dst -Force
     }
+    $msi = Join-Path $here 'System\Redist\ZeroTierOne.msi'
+    if (Test-Path $msi) {
+        New-Item -ItemType Directory -Force (Join-Path $sysDir 'Redist') | Out-Null
+        Copy-Item $msi (Join-Path $sysDir 'Redist\ZeroTierOne.msi') -Force
+    }
     Write-Host "Mod files installed in $sysDir"
 }
 
@@ -111,7 +116,7 @@ try {
         Write-Host "Multiplayer-only copy created: $TargetDir"
     }
     if (-not $PSBoundParameters.Count) {
-        [System.Windows.Forms.MessageBox]::Show("Done. Start the game with 'SCDA Multiplayer (P2P)' on your desktop.`nZeroTier One must be installed (zerotier.com/download).", 'SCDA P2P') | Out-Null
+        [System.Windows.Forms.MessageBox]::Show("Done. Start the game with 'SCDA Multiplayer (P2P)' on your desktop.`nIf ZeroTier One isn't installed, the launcher will offer to install it.", 'SCDA P2P') | Out-Null
     }
 }
 catch {

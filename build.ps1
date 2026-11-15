@@ -13,7 +13,7 @@ $icon = Join-Path $root '..\SCDA.ico'
 $iconArg = if (Test-Path $icon) { "/win32icon:$icon" } else { '' }
 & $csc /nologo /target:winexe /platform:anycpu /optimize+ "/out:$dist\SCDA_P2P_Launcher.exe" `
     "/win32manifest:$root\src\launcher\app.manifest" $iconArg `
-    /r:System.Web.Extensions.dll /r:System.ServiceProcess.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll `
+    /r:System.Web.Extensions.dll /r:System.ServiceProcess.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll `
     "$root\src\launcher\Launcher.cs"
 if ($LASTEXITCODE) { throw 'launcher build failed' }
 Write-Host 'Built SCDA_P2P_Launcher.exe'
@@ -53,5 +53,9 @@ if ($Install) {
     Copy-Item "$dist\SCDA_P2P_Launcher.exe" $sys -Force
     if (Test-Path "$dist\dinput8.dll") { Copy-Item "$dist\dinput8.dll" $sys -Force }
     if (-not (Test-Path "$sys\SCDA_P2P.ini")) { Copy-Item $ini $sys }
+    if (Test-Path "$root\redist\ZeroTierOne.msi") {
+        New-Item -ItemType Directory -Force "$sys\Redist" | Out-Null
+        Copy-Item "$root\redist\ZeroTierOne.msi" "$sys\Redist" -Force
+    }
     Write-Host "Installed into $sys"
 }

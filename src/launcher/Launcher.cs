@@ -8,6 +8,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
@@ -116,6 +117,159 @@ namespace ScdaP2P
         }
     }
 
+    // Updates: checks the latest GitHub release of the mod and installs its files over this one.
+    static class Updater
+    {
+        public const string Version = "1.0";
+        const string Api = "https://api.github.com/repos/justony5/SCDA-P2P-Mod/releases/latest";
+        public const string ReleasesPage = "https://github.com/justony5/SCDA-P2P-Mod/releases/latest";
+
+        public class Release { public string Tag, ZipUrl, Notes; public Version Ver; }
+
+        public static Version Parse(string s)
+        {
+            var m = Regex.Match(s ?? "", @"(\d+)(?:\.(\d+))?(?:\.(\d+))?");
+            if (!m.Success) return null;
+            return new Version(int.Parse(m.Groups[1].Value),
+                               m.Groups[2].Success ? int.Parse(m.Groups[2].Value) : 0,
+                               m.Groups[3].Success ? int.Parse(m.Groups[3].Value) : 0);
+        }
+
+        static WebClient Client()
+        {
+            ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;   // TLS 1.2
+            var wc = new WebClient();
+            wc.Headers["User-Agent"] = "SCDA-P2P-Launcher";
+            return wc;
+        }
+
+        public static Release Latest()
+        {
+            string json;
+            using (var wc = Client()) { wc.Headers["Accept"] = "application/vnd.github+json"; json = wc.DownloadString(Api); }
+            var d = new JavaScriptSerializer().DeserializeObject(json) as Dictionary<string, object>;
+            if (d == null || !d.ContainsKey("tag_name")) return null;
+            var r = new Release { Tag = Convert.ToString(d["tag_name"]),
+                                  Notes = d.ContainsKey("body") ? Convert.ToString(d["body"]) : "" };
+            r.Ver = Parse(r.Tag);
+            var assets = d.ContainsKey("assets") ? d["assets"] as object[] : null;
+            if (assets != null)
+                foreach (Dictionary<string, object> a in assets)
+                {
+                    string name = Convert.ToString(a["name"]);
+                    if (Regex.IsMatch(name, @"^SCDA_P2P_Mod_v[\d.]+\.zip$", RegexOptions.IgnoreCase))
+                        r.ZipUrl = Convert.ToString(a["browser_download_url"]);
+                }
+            return r;
+        }
+
+        public static bool IsNewer(Release r) { return r != null && r.Ver != null && r.Ver > Parse(Version); }
+
+        // Downloads the release zip and copies its System files next to this launcher.
+        // SCDA_P2P.ini is never replaced (it holds the player's settings).
+        public static void Install(Release r, string sysDir, Action<string> log)
+        {
+            if (Process.GetProcessesByName("SCDA_online").Length > 0) throw new Exception("Close the game first.");
+            string tmp = Path.Combine(Path.GetTempPath(), "SCDA_P2P_update");
+            if (Directory.Exists(tmp)) Directory.Delete(tmp, true);
+            Directory.CreateDirectory(tmp);
+            string zip = Path.Combine(tmp, "update.zip"), dir = Path.Combine(tmp, "files");
+            log("Downloading " + r.Tag + "...");
+            using (var wc = Client()) wc.DownloadFile(r.ZipUrl, zip);
+            System.IO.Compression.ZipFile.ExtractToDirectory(zip, dir);
+            string src = Path.Combine(dir, "System");
+            string newExe = Path.Combine(src, "SCDA_P2P_Launcher.exe"), newDll = Path.Combine(src, "dinput8.dll");
+            if (!File.Exists(newExe) || !File.Exists(newDll)) throw new Exception("The download doesn't contain the mod files.");
+
+            File.Copy(newDll, Path.Combine(sysDir, "dinput8.dll"), true);
+            string redist = Path.Combine(src, "Redist");
+            if (Directory.Exists(redist))
+            {
+                Directory.CreateDirectory(Path.Combine(sysDir, "Redist"));
+                foreach (var f in Directory.GetFiles(redist)) File.Copy(f, Path.Combine(sysDir, "Redist", Path.GetFileName(f)), true);
+            }
+            string readme = Path.Combine(dir, "README.md");
+            if (File.Exists(readme)) File.Copy(readme, Path.Combine(sysDir, "SCDA_P2P_README.md"), true);
+            // a running exe can be renamed but not overwritten
+            string self = Application.ExecutablePath, old = self + ".old";
+            if (File.Exists(old)) File.Delete(old);
+            File.Move(self, old);
+            File.Copy(newExe, self);
+            try { Directory.Delete(tmp, true); } catch { }
+            log("Updated to " + r.Tag + ".");
+        }
+    }
+
+    // "Multiplayer setup guide" window: how to create, join and authorize a ZeroTier network.
+    class SetupGuide : Form
+    {
+        const string Guide =
+"ZeroTier Multiplayer Setup\n" +
+"ZeroTier lets everyone connect as if they were on the same local network.\n\n" +
+"HOST: CREATE THE NETWORK\n" +
+"1. Sign up or log in at ZeroTier Central: https://central.zerotier.com\n" +
+"2. Create an organization if prompted, then open the default network. If you already have an account, select Networks > New Network.\n" +
+"3. Give the network a name and keep it Private, so you approve who joins.\n" +
+"4. Open the network's settings and enable Broadcast in the multicast/broadcast options. This mod requires broadcast to work.\n" +
+"5. Copy the 16-character Network ID and send it to your players. This is the code they use to join.\n" +
+"   Network settings guide: https://docs.zerotier.com/networks/\n\n" +
+"EVERYONE: JOIN THE NETWORK\n" +
+"1. Install ZeroTier, including on the host's computer. This launcher offers to install it for you; you can also download it from https://www.zerotier.com/download/\n" +
+"2. Paste the host's Network ID into the launcher and press PLAY: the launcher joins the network for you.\n" +
+"   (Or join by hand: click the ZeroTier icon near the Windows clock - you may need to click the ^ arrow first - select Join New Network, paste the Network ID and click Join.)\n" +
+"3. Give the host your Node ID, shown at the top of this launcher (Copy button) and in the ZeroTier app, so they can identify your computer.\n" +
+"   Joining guide: https://docs.zerotier.com/start/\n\n" +
+"HOST: APPROVE THE COMPUTERS\n" +
+"1. Return to your network in ZeroTier Central.\n" +
+"2. Open Member Devices.\n" +
+"3. Match each player's Node ID, then click ... > Authorize. Authorize your own computer too.\n" +
+"If you use Legacy Central, open Members and tick Auth? beside each computer instead.\n" +
+"   Authorization guide: https://docs.zerotier.com/networks/\n\n" +
+"START PLAYING\n" +
+"Keep ZeroTier running and connected, then launch the game with this launcher. In the game choose LAN: the host creates a multiplayer session, and everyone else joins.";
+
+        const string PlayerMessage =
+"Install ZeroTier, choose \"Join New Network,\" and enter this code: {0}. Send me your Node ID so I can approve your computer. Once approved, keep ZeroTier connected while we play.";
+
+        public SetupGuide(string networkId)
+        {
+            Text = "ZeroTier Multiplayer Setup";
+            FormBorderStyle = FormBorderStyle.Sizable; MinimizeBox = false;
+            ClientSize = new Size(620, 560); Font = new Font("Segoe UI", 9.5f);
+            StartPosition = FormStartPosition.CenterParent;
+
+            var box = new RichTextBox { Left = 10, Top = 10, Width = 600, Height = 486, ReadOnly = true, DetectUrls = true,
+                                        BackColor = SystemColors.Window, BorderStyle = BorderStyle.FixedSingle,
+                                        Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right };
+            box.Text = Guide;
+            foreach (var head in new[] { "ZeroTier Multiplayer Setup", "HOST: CREATE THE NETWORK", "EVERYONE: JOIN THE NETWORK",
+                                         "HOST: APPROVE THE COMPUTERS", "START PLAYING" })
+            {
+                int i = box.Text.IndexOf(head, StringComparison.Ordinal);
+                if (i < 0) continue;
+                box.Select(i, head.Length);
+                box.SelectionFont = new Font("Segoe UI", head == "ZeroTier Multiplayer Setup" ? 13f : 10f, FontStyle.Bold);
+            }
+            box.Select(0, 0);
+            box.LinkClicked += (s, e) => { try { Process.Start(new ProcessStartInfo(e.LinkText) { UseShellExecute = true }); } catch { } };
+            Controls.Add(box);
+
+            var anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            var btnCentral = new Button { Text = "Open ZeroTier Central", Left = 10, Top = 508, Width = 180, Height = 30, Anchor = anchor };
+            btnCentral.Click += (s, e) => { try { Process.Start(new ProcessStartInfo("https://central.zerotier.com") { UseShellExecute = true }); } catch { } };
+            var btnMsg = new Button { Text = "Copy message for players", Left = 198, Top = 508, Width = 200, Height = 30, Anchor = anchor };
+            btnMsg.Click += (s, e) =>
+            {
+                Clipboard.SetText(string.Format(PlayerMessage, networkId ?? "[PASTE NETWORK ID HERE]"));
+                btnMsg.Text = "Copied!";
+            };
+            var btnClose = new Button { Text = "Close", Left = 530, Top = 508, Width = 80, Height = 30,
+                                        Anchor = AnchorStyles.Bottom | AnchorStyles.Right, DialogResult = DialogResult.OK };
+            Controls.AddRange(new Control[] { btnCentral, btnMsg, btnClose });
+            AcceptButton = CancelButton = btnClose;
+        }
+    }
+
     class MainForm : Form
     {
         ComboBox txtNetwork;
@@ -123,7 +277,9 @@ namespace ScdaP2P
         Label lblNode;
         CheckBox chkCloseApp, chkWasd, chkPad;
         ComboBox cboMode, cboRes;
-        Button btnPlay, btnCopy;
+        Button btnPlay, btnCopy, btnInstallZt, btnUpdate;
+        const string ZeroTierSite = "https://www.zerotier.com/";
+        const string ZeroTierDownload = "https://www.zerotier.com/download/";
         string sysDir, gameExe;
         ZeroTier zt;
         string nodeId = "";
@@ -136,7 +292,8 @@ namespace ScdaP2P
             Ini.Path = Path.Combine(sysDir, "SCDA_P2P.ini");
             gameExe = Path.Combine(sysDir, Ini.Get("Launcher", "GameExe", "SCDA_online.exe"));
 
-            Text = "Splinter Cell Double Agent - P2P Launcher";
+            Text = "Splinter Cell Double Agent - P2P Launcher v" + Updater.Version;
+            try { File.Delete(Application.ExecutablePath + ".old"); } catch { }   // left behind by an update
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false;
             ClientSize = new Size(520, 538); Font = new Font("Segoe UI", 9f);
             StartPosition = FormStartPosition.CenterScreen;
@@ -156,11 +313,21 @@ namespace ScdaP2P
             btnCopy.Click += (s, e) => { if (nodeId.Length > 0) Clipboard.SetText(nodeId); };
             Controls.Add(btnCopy);
 
-            chkCloseApp = new CheckBox { Text = "Close the ZeroTier app (tray icon) when the game closes", Left = 12, Top = 72, Width = 496,
+            var btnSite = new Button { Text = "ZeroTier website", Left = 12, Top = 68, Width = 120, Height = 26 };
+            btnSite.Click += (s, e) => OpenUrl(ZeroTierSite);
+            var btnGuide = new Button { Text = "Multiplayer setup guide", Left = 138, Top = 68, Width = 150, Height = 26 };
+            btnGuide.Click += (s, e) => new SetupGuide(CleanId(txtNetwork.Text)).ShowDialog(this);
+            btnUpdate = new Button { Text = "Check for updates", Left = 294, Top = 68, Width = 112, Height = 26 };
+            btnUpdate.Click += (s, e) => CheckForUpdates(true);
+            btnInstallZt = new Button { Text = "Install ZeroTier", Left = 412, Top = 68, Width = 96, Height = 26, Visible = false };
+            btnInstallZt.Click += (s, e) => OfferZeroTierInstall(false);
+            Controls.AddRange(new Control[] { btnSite, btnGuide, btnUpdate, btnInstallZt });
+
+            chkCloseApp = new CheckBox { Text = "Close the ZeroTier app (tray icon) when the game closes", Left = 12, Top = 100, Width = 496,
                                          Checked = Ini.GetBool("Launcher", "CloseZeroTierApp", true) };
             Controls.Add(chkCloseApp);
 
-            var grp = new GroupBox { Text = "Game settings (applied when you press PLAY)", Left = 12, Top = 98, Width = 496, Height = 130 };
+            var grp = new GroupBox { Text = "Game settings (applied when you press PLAY)", Left = 12, Top = 126, Width = 496, Height = 130 };
             grp.Controls.Add(new Label { Text = "Display:", Left = 10, Top = 26, AutoSize = true });
             cboMode = new ComboBox { Left = 80, Top = 22, Width = 150, DropDownStyle = ComboBoxStyle.DropDownList };
             cboMode.Items.AddRange(new object[] { "Borderless window", "Fullscreen", "Window" });
@@ -174,11 +341,11 @@ namespace ScdaP2P
             Controls.Add(grp);
             FillDisplayChoices();
 
-            btnPlay = new Button { Text = "PLAY", Left = 12, Top = 238, Width = 496, Height = 40, Font = new Font("Segoe UI", 12f, FontStyle.Bold) };
+            btnPlay = new Button { Text = "PLAY", Left = 12, Top = 266, Width = 496, Height = 40, Font = new Font("Segoe UI", 12f, FontStyle.Bold) };
             btnPlay.Click += (s, e) => StartPlay();
             Controls.Add(btnPlay);
 
-            txtLog = new TextBox { Left = 12, Top = 288, Width = 496, Height = 216, Multiline = true, ReadOnly = true,
+            txtLog = new TextBox { Left = 12, Top = 316, Width = 496, Height = 188, Multiline = true, ReadOnly = true,
                                    ScrollBars = ScrollBars.Vertical, BackColor = Color.Black, ForeColor = Color.LightGreen,
                                    Font = new Font("Consolas", 8.5f) };
             Controls.Add(txtLog);
@@ -211,17 +378,87 @@ namespace ScdaP2P
             if (!File.Exists(Path.Combine(sysDir, "dinput8.dll")))
                 Log("WARNING: dinput8.dll (adapter fix) is missing next to the game. LAN games may not be found.");
 
+            InitZeroTier(true);
+            if (!autoPlay && Ini.GetBool("Updates", "CheckOnStart", true)) CheckForUpdates(false);
+        }
+
+        // ---- updates from GitHub Releases
+        void CheckForUpdates(bool manual)
+        {
+            btnUpdate.Enabled = false;
+            new Thread(() =>
+            {
+                Updater.Release r = null; string err = null;
+                try { r = Updater.Latest(); } catch (Exception ex) { err = ex.Message; }
+                BeginInvoke(new Action(() =>
+                {
+                    btnUpdate.Enabled = true;
+                    if (err != null) { Log("Update check failed: " + err); if (manual) MessageBox.Show(this, "Couldn't check for updates:\n" + err, "Updates"); return; }
+                    if (!Updater.IsNewer(r))
+                    {
+                        if (manual) MessageBox.Show(this, "You have the latest version (v" + Updater.Version + ").", "Updates");
+                        return;
+                    }
+                    Log("Update available: " + r.Tag + " (you have v" + Updater.Version + ").");
+                    string notes = (r.Notes ?? "").Replace("\r", "").Trim();
+                    if (notes.Length > 700) notes = notes.Substring(0, 700) + "...";
+                    if (r.ZipUrl == null)
+                    {
+                        if (MessageBox.Show(this, "Version " + r.Tag + " is available. Open the download page?", "Update available",
+                                            MessageBoxButtons.YesNo) == DialogResult.Yes) OpenUrl(Updater.ReleasesPage);
+                        return;
+                    }
+                    if (MessageBox.Show(this, "Version " + r.Tag + " of the mod is available (you have v" + Updater.Version + ").\n\n" +
+                                        notes + "\n\nUpdate now? The launcher restarts when it's done; your settings are kept.",
+                                        "Update available", MessageBoxButtons.YesNo, MessageBoxIcon.Information) != DialogResult.Yes) return;
+                    RunUpdate(r);
+                }));
+            }) { IsBackground = true }.Start();
+        }
+
+        void RunUpdate(Updater.Release r)
+        {
+            btnPlay.Enabled = btnUpdate.Enabled = false;
+            new Thread(() =>
+            {
+                try
+                {
+                    Updater.Install(r, sysDir, Log);
+                    BeginInvoke(new Action(() =>
+                    {
+                        MessageBox.Show(this, "Updated to " + r.Tag + ". The launcher will now restart.", "Updated");
+                        // started directly (not via the shell), so the new launcher keeps this one's admin rights
+                        Process.Start(new ProcessStartInfo(Application.ExecutablePath) { UseShellExecute = false, WorkingDirectory = sysDir });
+                        Application.Exit();
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    Log("Update failed: " + ex.Message);
+                    BeginInvoke(new Action(() =>
+                    {
+                        btnUpdate.Enabled = true; btnPlay.Enabled = zt != null;
+                        // if the exe was already moved aside but the copy failed, put it back
+                        string self = Application.ExecutablePath;
+                        if (!File.Exists(self) && File.Exists(self + ".old")) try { File.Move(self + ".old", self); } catch { }
+                        MessageBox.Show(this, "Update failed: " + ex.Message + "\n\nYou can download it from the Releases page instead.", "Update");
+                    }));
+                }
+            }) { IsBackground = true }.Start();
+        }
+
+        void InitZeroTier(bool offerInstall)
+        {
             zt = ZeroTier.Find();
             if (zt == null)
             {
                 lblNode.Text = "ZeroTier is not installed";
+                btnCopy.Enabled = false; btnPlay.Enabled = false; btnInstallZt.Visible = true;
                 Log("ZeroTier One is not installed.");
-                if (MessageBox.Show(this, "ZeroTier One is required and is not installed.\n\nOpen the ZeroTier download page now?\n" +
-                    "Install it, then start this launcher again.", "ZeroTier missing", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
-                    Process.Start("https://www.zerotier.com/download/");
-                btnPlay.Enabled = false;
+                if (offerInstall) OfferZeroTierInstall(true);
                 return;
             }
+            btnInstallZt.Visible = false; btnPlay.Enabled = true;
             new Thread(() =>
             {
                 try
@@ -234,6 +471,65 @@ namespace ScdaP2P
                     if (autoPlay) BeginInvoke(new Action(StartPlay));
                 }
                 catch (Exception ex) { Log("ERROR: " + ex.Message); }
+            }) { IsBackground = true }.Start();
+        }
+
+        // ---- ZeroTier install: the official ZeroTier One installer ships in Redist\ next to the launcher
+        string BundledInstaller()
+        {
+            foreach (var dir in new[] { Path.Combine(sysDir, "Redist"), sysDir })
+            {
+                if (!Directory.Exists(dir)) continue;
+                var msi = Directory.GetFiles(dir, "ZeroTier*.msi").FirstOrDefault();
+                if (msi != null) return msi;
+            }
+            return null;
+        }
+
+        static void OpenUrl(string url)
+        {
+            try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { }
+        }
+
+        void OfferZeroTierInstall(bool atStartup)
+        {
+            string msi = BundledInstaller();
+            if (msi == null)
+            {
+                if (MessageBox.Show(this, "ZeroTier One is required to play online and is not installed.\n\n" +
+                    "The bundled installer (Redist\\ZeroTierOne.msi) is missing, so it can't be installed from here.\n" +
+                    "Open the ZeroTier download page?", "ZeroTier required", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+                    OpenUrl(ZeroTierDownload);
+                return;
+            }
+            if (MessageBox.Show(this, "ZeroTier One is required to play online and is not installed.\n\n" +
+                "Install it now? The official ZeroTier installer will open; follow its steps.",
+                "ZeroTier required", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            {
+                Log("ZeroTier install skipped. Use 'Install ZeroTier' when you're ready.");
+                return;
+            }
+            btnInstallZt.Enabled = false; btnPlay.Enabled = false;
+            Log("Running the ZeroTier One installer...");
+            new Thread(() =>
+            {
+                int code = -1;
+                try
+                {
+                    // runas: the launcher normally already runs as admin; this makes sure the installer does too.
+                    var psi = new ProcessStartInfo("msiexec.exe", "/i \"" + msi + "\"") { UseShellExecute = true, Verb = "runas" };
+                    using (var p = Process.Start(psi)) { p.WaitForExit(); code = p.ExitCode; }
+                }
+                catch (Exception ex) { Log("Could not start the installer: " + ex.Message); }
+                BeginInvoke(new Action(() =>
+                {
+                    btnInstallZt.Enabled = true;
+                    if (code == 1602) Log("ZeroTier install was cancelled.");
+                    else if (code != 0 && code != 3010 && code != -1) Log("ZeroTier installer exited with code " + code + ".");
+                    if (code == 0 || code == 3010) Log("ZeroTier One installed.");
+                    InitZeroTier(false);
+                    if (zt == null && code == 0) Log("ZeroTier still not found. Restart the launcher (or the PC) and try again.");
+                }));
             }) { IsBackground = true }.Start();
         }
 
@@ -480,10 +776,11 @@ namespace ScdaP2P
         void EnsureFirewallRule()
         {
             // One rule per game folder, so a second copy of the game doesn't replace this one's rule.
+            // Rebuilt on every PLAY: if Windows' "allow access?" prompt was ever cancelled for the game it
+            // adds BLOCK rules for the exe, which beat any allow rule and stop other players reaching us.
             string rule = "SCDA P2P - " + gameExe;
-            if (Ini.Get("Launcher", "FirewallRule", "") == rule) return;
-            Log("Adding Windows Firewall rule for the game...");
-            RunHidden("netsh", "advfirewall firewall delete rule name=\"" + rule + "\"");
+            Log("Checking the Windows Firewall rule for the game...");
+            RunHidden("netsh", "advfirewall firewall delete rule name=all dir=in program=\"" + gameExe + "\"");
             RunHidden("netsh", "advfirewall firewall add rule name=\"" + rule + "\" dir=in action=allow program=\"" + gameExe + "\" enable=yes profile=any");
             Ini.Set("Launcher", "FirewallRule", rule);
         }

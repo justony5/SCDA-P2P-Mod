@@ -67,7 +67,8 @@ typedef HRESULT (STDMETHODCALLTYPE *F5)(void *, A, A, A, A, A);
 /* ------------------------------------------------ wrapped device */
 #define XB_MAXFMT 64
 typedef struct {
-    void **vtbl; void *real;               /* must match WRAP */
+    void **vtbl; void *real;               /* must match WRAP; real = NULL for the virtual pad */
+    LONG   refs;                            /* virtual pad only */
     LONG   rmin, rmax;                      /* axis range the game asked for */
     DWORD  dataSize;
     int    nfmt;
@@ -169,11 +170,10 @@ static HRESULT STDMETHODCALLTYPE Dev_SetProperty(void *s, REFGUID prop, LPCDIPRO
     return ((F2)RV(s, 6))(REAL(s), (A)prop, (A)ph);
 }
 
-static HRESULT STDMETHODCALLTYPE Dev_SetDataFormat(void *s, LPCDIDATAFORMAT df)
+/* Records where the game wants each axis/button/POV in its state struct. */
+static void xb_parse_format(XBDEV *d, LPCDIDATAFORMAT df, HRESULT hr)
 {
-    HRESULT hr = ((F1)RV(s, 11))(REAL(s), (A)df);
-    XBDEV *d = (XBDEV *)s;
-    if (df) {
+    {
         DWORD i; int axis = 0, button = 0, pov = 0;
         d->dataSize = df->dwDataSize;
         d->nfmt = 0;
@@ -197,6 +197,16 @@ static HRESULT STDMETHODCALLTYPE Dev_SetDataFormat(void *s, LPCDIDATAFORMAT df)
         }
         logf("Controller: game data format %lu bytes, %d axes, %d buttons, %d POV (hr 0x%08lx)",
              df->dwDataSize, axis, button, pov, (unsigned long)hr);
+    }
+}
+
+static HRESULT STDMETHODCALLTYPE Dev_SetDataFormat(void *s, LPCDIDATAFORMAT df)
+{
+    HRESULT hr = ((F1)RV(s, 11))(REAL(s), (A)df);
+    XBDEV *d = (XBDEV *)s;
+    if (df) {
+        DWORD i;
+        xb_parse_format(d, df, hr);
         /* The game may never set a range; use whatever range DirectInput reports for the X axis. */
         for (i = 0; i < (DWORD)d->nfmt; i++)
             if (d->fmt[i].kind == 1 && d->fmt[i].index == 0) {
@@ -214,13 +224,12 @@ static HRESULT STDMETHODCALLTYPE Dev_SetDataFormat(void *s, LPCDIDATAFORMAT df)
     return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE Dev_GetDeviceState(void *s, DWORD cb, LPVOID data)
+/* Fills the game's state struct from XInput. Returns 0 if there's no pad (struct untouched). */
+static int xb_fill(XBDEV *d, DWORD cb, LPVOID data)
 {
-    HRESULT hr = ((F2)RV(s, 9))(REAL(s), (A)cb, (A)data);
-    XBDEV *d = (XBDEV *)s;
     XSTATE st;
     int i;
-    if (!data || !d->nfmt || cb < d->dataSize || xb_read(&st) < 0) return hr;
+    if (!data || !d->nfmt || cb < d->dataSize || xb_read(&st) < 0) return 0;
     {
         const XGAMEPAD *g = &st.Gamepad;
         WORD b = g->wButtons;
@@ -255,6 +264,13 @@ static HRESULT STDMETHODCALLTYPE Dev_GetDeviceState(void *s, DWORD cb, LPVOID da
             else if (d->fmt[i].kind == 3) *(DWORD *)p = 0xFFFFFFFF;   /* D-pad is buttons 13-16 */
         }
     }
+    return 1;
+}
+
+static HRESULT STDMETHODCALLTYPE Dev_GetDeviceState(void *s, DWORD cb, LPVOID data)
+{
+    HRESULT hr = ((F2)RV(s, 9))(REAL(s), (A)cb, (A)data);
+    if (!xb_fill((XBDEV *)s, cb, data)) return hr;
     return DI_OK;   /* XInput state is valid even if DirectInput lost the device */
 }
 
@@ -295,8 +311,193 @@ static void *g_devVtbl[32] = {
     (void *)Dev_Poll, (void *)Dev_SendDeviceData, (void *)Dev_EnumEffectsInFile, (void *)Dev_WriteEffectToFile,
     (void *)Dev_BuildActionMap, (void *)Dev_SetActionMap, (void *)Dev_GetImageInfo };
 
-/* ------------------------------------------------ wrapped IDirectInput8 */
+/* ------------------------------------------------ virtual pad
+ * Some XInput controllers (for example some ASUS ROG and other "Xbox-compatible" pads, or a pad
+ * on a wireless dongle) never show up in DirectInput at all, so the game finds no controller and
+ * the bridge above has nothing to attach to. In that case the enumeration gets one extra device,
+ * "XInput Controller", which exists only in this DLL and is read entirely from XInput.
+ * [Controller] VirtualPad=1 (default) adds it only when DirectInput has no game controller and
+ * an XInput pad is connected; 2 = always add it when DirectInput has none; 3 = always add it,\n * even next to a DirectInput controller (for testing, or a pad whose DirectInput side is broken); 0 = never. */
+static int g_xbVirtual = 1;
 static int g_diIsW;
+/* {5CDA0001-0000-4000-8000-5344415032500001} */
+static const GUID GUID_XbVirtual = { 0x5cda0001, 0x0000, 0x4000, { 0x80, 0x00, 0x53, 0x44, 0x41, 0x50, 0x32, 0x50 } };
+#define XB_VDEVTYPE (DI8DEVTYPE_GAMEPAD | (DI8DEVTYPEGAMEPAD_STANDARD << 8))
+
+static void xb_fill_instance(void *out, int wide)
+{
+    /* DIDEVICEINSTANCEA/W share the layout up to the names */
+    DIDEVICEINSTANCEA *a = (DIDEVICEINSTANCEA *)out;
+    DWORD size = wide ? sizeof(DIDEVICEINSTANCEW) : sizeof(DIDEVICEINSTANCEA);
+    DWORD keep = a->dwSize && a->dwSize <= size ? a->dwSize : size;
+    memset(out, 0, keep);
+    a->dwSize = keep;
+    a->guidInstance = GUID_XbVirtual;
+    a->guidProduct = GUID_XbVirtual;
+    a->dwDevType = XB_VDEVTYPE;
+    if (wide) {
+        DIDEVICEINSTANCEW *w = (DIDEVICEINSTANCEW *)out;
+        if (keep >= sizeof(DIDEVICEINSTANCEW)) {
+            wcscpy_s(w->tszInstanceName, MAX_PATH, L"XInput Controller");
+            wcscpy_s(w->tszProductName, MAX_PATH, L"XInput Controller");
+        }
+    } else if (keep >= sizeof(DIDEVICEINSTANCEA)) {
+        strcpy_s(a->tszInstanceName, MAX_PATH, "XInput Controller");
+        strcpy_s(a->tszProductName, MAX_PATH, "XInput Controller");
+    }
+}
+
+static HRESULT STDMETHODCALLTYPE V_QueryInterface(void *s, REFIID riid, void **out)
+{
+    if (!out) return E_POINTER;
+    if (IsEqualGUID(riid, &IID_IUnknown) || IsEqualGUID(riid, &IID_IDirectInputDevice8A) ||
+        IsEqualGUID(riid, &IID_IDirectInputDevice8W)) {
+        InterlockedIncrement(&((XBDEV *)s)->refs);
+        *out = s;
+        return S_OK;
+    }
+    *out = NULL;
+    return E_NOINTERFACE;
+}
+static ULONG STDMETHODCALLTYPE V_AddRef(void *s) { return (ULONG)InterlockedIncrement(&((XBDEV *)s)->refs); }
+static ULONG STDMETHODCALLTYPE V_Release(void *s)
+{
+    LONG n = InterlockedDecrement(&((XBDEV *)s)->refs);
+    if (n == 0) free(s);
+    return (ULONG)n;
+}
+static HRESULT STDMETHODCALLTYPE V_GetCapabilities(void *s, LPDIDEVCAPS caps)
+{
+    (void)s;
+    if (!caps || caps->dwSize < sizeof(DIDEVCAPS_DX3)) return DIERR_INVALIDPARAM;
+    { DWORD sz = caps->dwSize; memset(caps, 0, sz); caps->dwSize = sz; }
+    caps->dwFlags = DIDC_ATTACHED | DIDC_EMULATED;
+    caps->dwDevType = XB_VDEVTYPE;
+    caps->dwAxes = 5;
+    caps->dwButtons = 16;
+    caps->dwPOVs = 0;
+    return DI_OK;
+}
+
+/* objects: 5 axes (X, Y, Z, Rx, Ry) then 16 buttons */
+static HRESULT STDMETHODCALLTYPE V_EnumObjects(void *s, A cbA, A ref, A flagsA)
+{
+    static const GUID *axisGuid[5] = { &GUID_XAxis, &GUID_YAxis, &GUID_ZAxis, &GUID_RxAxis, &GUID_RyAxis };
+    static const char *axisName[5] = { "X Axis", "Y Axis", "Z Axis", "X Rotation", "Y Rotation" };
+    typedef BOOL (CALLBACK *CB)(const void *, void *);
+    CB cb = (CB)cbA;
+    DWORD flags = (DWORD)flagsA;
+    int i;
+    (void)s;
+    if (!cb) return DIERR_INVALIDPARAM;
+    for (i = 0; i < 21; i++) {
+        int isAxis = i < 5;
+        DIDEVICEOBJECTINSTANCEW w;   /* the larger of A/W; A is filled in its first bytes */
+        DIDEVICEOBJECTINSTANCEA *a = (DIDEVICEOBJECTINSTANCEA *)&w;
+        char name[32];
+        if (flags != DIDFT_ALL && !(flags & (isAxis ? DIDFT_AXIS : DIDFT_BUTTON))) continue;
+        memset(&w, 0, sizeof(w));
+        a->dwSize = g_diIsW ? sizeof(DIDEVICEOBJECTINSTANCEW) : sizeof(DIDEVICEOBJECTINSTANCEA);
+        a->guidType = isAxis ? *axisGuid[i] : GUID_Button;
+        a->dwOfs = isAxis ? (DWORD)(i * 4) : (DWORD)(48 + (i - 5));                  /* DIJOYSTATE offsets */
+        a->dwType = isAxis ? (DIDFT_ABSAXIS | DIDFT_MAKEINSTANCE(i)) : (DIDFT_PSHBUTTON | DIDFT_MAKEINSTANCE(i - 5));
+        if (isAxis) strcpy_s(name, sizeof(name), axisName[i]);
+        else sprintf_s(name, sizeof(name), "Button %d", i - 4);
+        if (g_diIsW) MultiByteToWideChar(CP_ACP, 0, name, -1, w.tszName, MAX_PATH);
+        else strcpy_s(a->tszName, MAX_PATH, name);
+        if (cb(&w, (void *)ref) == DIENUM_STOP) break;
+    }
+    return DI_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE V_GetProperty(void *s, REFGUID prop, LPDIPROPHEADER ph)
+{
+    XBDEV *d = (XBDEV *)s;
+    if (!ph) return DIERR_INVALIDPARAM;
+    if ((ULONG_PTR)prop == (ULONG_PTR)DIPROP_RANGE && ph->dwSize >= sizeof(DIPROPRANGE)) {
+        ((DIPROPRANGE *)ph)->lMin = d->rmin; ((DIPROPRANGE *)ph)->lMax = d->rmax; return DI_OK;
+    }
+    if (((ULONG_PTR)prop == (ULONG_PTR)DIPROP_DEADZONE || (ULONG_PTR)prop == (ULONG_PTR)DIPROP_SATURATION ||
+         (ULONG_PTR)prop == (ULONG_PTR)DIPROP_BUFFERSIZE) && ph->dwSize >= sizeof(DIPROPDWORD)) {
+        ((DIPROPDWORD *)ph)->dwData = (ULONG_PTR)prop == (ULONG_PTR)DIPROP_SATURATION ? 10000 : 0; return DI_OK;
+    }
+    return DIERR_UNSUPPORTED;
+}
+static HRESULT STDMETHODCALLTYPE V_SetProperty(void *s, REFGUID prop, LPCDIPROPHEADER ph)
+{
+    XBDEV *d = (XBDEV *)s;
+    if (ph && (ULONG_PTR)prop == (ULONG_PTR)DIPROP_RANGE && ph->dwSize >= sizeof(DIPROPRANGE)) {
+        const DIPROPRANGE *r = (const DIPROPRANGE *)ph;
+        if (r->lMax > r->lMin) { d->rmin = r->lMin; d->rmax = r->lMax; logf("Controller: axis range %ld..%ld", r->lMin, r->lMax); }
+    }
+    return DI_OK;
+}
+static HRESULT STDMETHODCALLTYPE V_Ok0(void *s) { (void)s; return DI_OK; }
+static HRESULT STDMETHODCALLTYPE V_Ok1(void *s, A a) { (void)s; (void)a; return DI_OK; }
+static HRESULT STDMETHODCALLTYPE V_Ok2(void *s, A a, A b) { (void)s; (void)a; (void)b; return DI_OK; }
+static HRESULT STDMETHODCALLTYPE V_Ok3(void *s, A a, A b, A c) { (void)s; (void)a; (void)b; (void)c; return DI_OK; }
+static HRESULT STDMETHODCALLTYPE V_No1(void *s, A a) { (void)s; (void)a; return DIERR_UNSUPPORTED; }
+static HRESULT STDMETHODCALLTYPE V_No2(void *s, A a, A b) { (void)s; (void)a; (void)b; return DIERR_UNSUPPORTED; }
+static HRESULT STDMETHODCALLTYPE V_No3(void *s, A a, A b, A c) { (void)s; (void)a; (void)b; (void)c; return DIERR_UNSUPPORTED; }
+static HRESULT STDMETHODCALLTYPE V_No4(void *s, A a, A b, A c, A d) { (void)s; (void)a; (void)b; (void)c; (void)d; return DIERR_UNSUPPORTED; }
+static HRESULT STDMETHODCALLTYPE V_Poll(void *s) { (void)s; return DI_NOEFFECT; }
+
+static HRESULT STDMETHODCALLTYPE V_GetDeviceState(void *s, DWORD cb, LPVOID data)
+{
+    XBDEV *d = (XBDEV *)s;
+    int i;
+    if (!data) return DIERR_INVALIDPARAM;
+    if (xb_fill(d, cb, data)) return DI_OK;
+    /* no pad right now: centred sticks, nothing pressed */
+    memset(data, 0, cb);
+    for (i = 0; i < d->nfmt; i++) {
+        BYTE *p = (BYTE *)data + d->fmt[i].ofs;
+        if (d->fmt[i].ofs >= cb) continue;
+        if (d->fmt[i].kind == 1) *(LONG *)p = xb_scale(0, d);
+        else if (d->fmt[i].kind == 3) *(DWORD *)p = 0xFFFFFFFF;
+    }
+    return DI_OK;
+}
+static HRESULT STDMETHODCALLTYPE V_GetDeviceData(void *s, DWORD cbObj, LPDIDEVICEOBJECTDATA od, LPDWORD inOut, DWORD flags)
+{
+    (void)s; (void)cbObj; (void)od; (void)flags;
+    if (inOut) *inOut = 0;
+    return DI_OK;
+}
+static HRESULT STDMETHODCALLTYPE V_SetDataFormat(void *s, LPCDIDATAFORMAT df)
+{
+    if (!df) return DIERR_INVALIDPARAM;
+    xb_parse_format((XBDEV *)s, df, DI_OK);
+    return DI_OK;
+}
+static HRESULT STDMETHODCALLTYPE V_GetDeviceInfo(void *s, A info)
+{
+    (void)s;
+    if (!info) return DIERR_INVALIDPARAM;
+    xb_fill_instance((void *)info, g_diIsW);
+    return DI_OK;
+}
+
+static void *g_vdevVtbl[32] = {
+    (void *)V_QueryInterface, (void *)V_AddRef, (void *)V_Release, (void *)V_GetCapabilities,
+    (void *)V_EnumObjects, (void *)V_GetProperty, (void *)V_SetProperty, (void *)V_Ok0 /* Acquire */,
+    (void *)V_Ok0 /* Unacquire */, (void *)V_GetDeviceState, (void *)V_GetDeviceData, (void *)V_SetDataFormat,
+    (void *)V_Ok1 /* SetEventNotification */, (void *)V_Ok2 /* SetCooperativeLevel */, (void *)V_No3 /* GetObjectInfo */,
+    (void *)V_GetDeviceInfo, (void *)V_Ok2 /* RunControlPanel */, (void *)V_Ok3 /* Initialize */, (void *)V_No4 /* CreateEffect */,
+    (void *)V_Ok3 /* EnumEffects */, (void *)V_No2 /* GetEffectInfo */, (void *)V_No1 /* GetForceFeedbackState */,
+    (void *)V_No1 /* SendForceFeedbackCommand */, (void *)V_Ok3 /* EnumCreatedEffectObjects */, (void *)V_No1 /* Escape */,
+    (void *)V_Poll, (void *)V_No4 /* SendDeviceData */, (void *)V_No4 /* EnumEffectsInFile */, (void *)V_No4 /* WriteEffectToFile */,
+    (void *)V_No3 /* BuildActionMap */, (void *)V_No3 /* SetActionMap */, (void *)V_No1 /* GetImageInfo */ };
+
+static int xb_pad_connected(void)
+{
+    XSTATE st; DWORD i;
+    if (!g_xget) return 0;
+    for (i = 0; i < 4; i++) if (g_xget(i, &st) == ERROR_SUCCESS) return 1;
+    return 0;
+}
+
+/* ------------------------------------------------ wrapped IDirectInput8 */
 
 static HRESULT STDMETHODCALLTYPE DI_QueryInterface(void *s, REFIID riid, void **out)
 {
@@ -318,7 +519,16 @@ static ULONG STDMETHODCALLTYPE DI_Release(void *s)
 
 static HRESULT STDMETHODCALLTYPE DI_CreateDevice(void *s, REFGUID guid, void **dev, void *outer)
 {
-    HRESULT hr = ((F3)RV(s, 3))(REAL(s), (A)guid, (A)dev, (A)outer);
+    HRESULT hr;
+    if (guid && dev && IsEqualGUID(guid, &GUID_XbVirtual)) {
+        XBDEV *d = (XBDEV *)calloc(1, sizeof(XBDEV));
+        if (!d) return E_OUTOFMEMORY;
+        d->vtbl = g_vdevVtbl; d->real = NULL; d->refs = 1; d->rmin = 0; d->rmax = 65535;
+        *dev = d;
+        logf("Controller: game opened the virtual XInput controller");
+        return DI_OK;
+    }
+    hr = ((F3)RV(s, 3))(REAL(s), (A)guid, (A)dev, (A)outer);
     if (SUCCEEDED(hr) && dev && *dev) {
         void *real = *dev;
         DIDEVCAPS caps;
@@ -339,8 +549,53 @@ static HRESULT STDMETHODCALLTYPE DI_CreateDevice(void *s, REFGUID guid, void **d
     return hr;
 }
 
-FWD4(DI_EnumDevices, 4)
-FWD1(DI_GetDeviceStatus, 5)
+typedef BOOL (CALLBACK *ENUMCB)(const void *inst, void *ref);
+typedef struct { ENUMCB cb; void *ref; int gamectrl, stopped; } ENUMCTX;
+
+static BOOL CALLBACK xb_enum_tramp(const void *inst, void *ctxp)
+{
+    ENUMCTX *c = (ENUMCTX *)ctxp;
+    BYTE type = (BYTE)(((const DIDEVICEINSTANCEA *)inst)->dwDevType & 0xFF);
+    if (type >= DI8DEVTYPE_JOYSTICK && type <= DI8DEVTYPE_1STPERSON) c->gamectrl = 1;
+    if (c->cb(inst, c->ref) == DIENUM_STOP) { c->stopped = 1; return DIENUM_STOP; }
+    return DIENUM_CONTINUE;
+}
+
+static HRESULT STDMETHODCALLTYPE DI_EnumDevices(void *s, A typeA, A cbA, A ref, A flagsA)
+{
+    static int logged;
+    DWORD type = (DWORD)typeA, flags = (DWORD)flagsA;
+    ENUMCTX c;
+    HRESULT hr;
+    int wantsPad = type == DI8DEVCLASS_ALL || type == DI8DEVCLASS_GAMECTRL ||
+                   type == DI8DEVTYPE_GAMEPAD || type == DI8DEVTYPE_JOYSTICK;
+    if (!cbA || !g_xbVirtual || !wantsPad || (flags & (DIEDFL_FORCEFEEDBACK | DIEDFL_INCLUDEHIDDEN)))
+        return ((F4)RV(s, 4))(REAL(s), typeA, cbA, ref, flagsA);
+    c.cb = (ENUMCB)cbA; c.ref = (void *)ref; c.gamectrl = 0; c.stopped = 0;
+    hr = ((F4)RV(s, 4))(REAL(s), typeA, (A)xb_enum_tramp, (A)&c, flagsA);
+    if (FAILED(hr) || c.stopped || (c.gamectrl && g_xbVirtual != 3)) {
+        if (c.gamectrl && !logged) { logged = 1; logf("Controller: DirectInput lists a game controller (no virtual pad needed)"); }
+        return hr;
+    }
+    if (g_xbVirtual == 1 && !xb_pad_connected()) {
+        if (!logged) { logged = 1; logf("Controller: no controller in DirectInput or XInput"); }
+        return hr;
+    }
+    {
+        DIDEVICEINSTANCEW inst;   /* big enough for either A or W */
+        inst.dwSize = 0;
+        xb_fill_instance(&inst, g_diIsW);
+        if (logged != 2) { logged = 2; logf(c.gamectrl ? "Controller: offering the virtual XInput controller (VirtualPad=3)" : "Controller: DirectInput has no game controller; offering the virtual XInput controller"); }
+        c.cb(&inst, c.ref);
+    }
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE DI_GetDeviceStatus(void *s, A guid)
+{
+    if (guid && IsEqualGUID((REFGUID)guid, &GUID_XbVirtual)) return xb_pad_connected() ? DI_OK : DI_NOTATTACHED;
+    return ((F1)RV(s, 5))(REAL(s), guid);
+}
 FWD2(DI_RunControlPanel, 6)
 FWD2(DI_Initialize, 7)
 FWD3(DI_FindDevice, 8)
@@ -353,13 +608,15 @@ static void *g_diVtbl[11] = {
     (void *)DI_FindDevice, (void *)DI_EnumDevicesBySemantics, (void *)DI_ConfigureDevices };
 
 /* Called after the real DirectInput8Create succeeds; returns the object to hand to the game. */
-static void *xb_wrap_dinput(void *di)
+static void *xb_wrap_dinput(void *di, REFIID riid)
 {
     static int initDone;
     WRAP *w;
+    g_diIsW = riid && IsEqualGUID(riid, &IID_IDirectInput8W);
     if (!initDone) {
         HMODULE x;
         initDone = 1;
+        g_xbVirtual = GetPrivateProfileIntA("Controller", "VirtualPad", 1, g_iniPath);
         g_xbEnabled = GetPrivateProfileIntA("Controller", "XInput", 1, g_iniPath);
         g_xbThreshold = GetPrivateProfileIntA("Controller", "TriggerThreshold", 30, g_iniPath);
         g_xbStartEsc = GetPrivateProfileIntA("Controller", "StartIsEscape", 1, g_iniPath);
