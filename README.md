@@ -147,6 +147,10 @@ with the saved network ID.
 - **Firewall:** on every PLAY the launcher removes all inbound Windows Firewall rules for the game exe
   and adds one allow rule. This clears the hidden *block* rules Windows creates if the "allow access"
   prompt was ever cancelled for the game. Third-party firewalls/antivirus must be set to allow it by hand.
+- **"Player ... seems to be cheating (N)"**: the game's own anti-cheat. N adds up these checks: 1 packet time-out,
+  2 health, 4 ammo, 8 player state, 10 speed, 20 weapon type, 40 weapon state, 80 vision, 100 hacking
+  speed, 200 lives, 400 banned program. (1) used to fire when a player sent nothing for 7 s (slow map
+  load, lag); the mod raises that to 60 s (`CheatTimeoutSeconds=` under `[P2P]`, host's value counts).
 - **Controller not detected** (no `Controller:` lines in the log): some XInput pads, for example
   some ASUS ROG and other third-party or wireless pads, never appear in DirectInput, which is what the
   game uses. The mod then gives the game a virtual "XInput Controller" read from XInput

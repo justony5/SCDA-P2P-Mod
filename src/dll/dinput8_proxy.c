@@ -664,6 +664,44 @@ static void patch_menu_resolutions(void)
     }
 }
 
+/* ------------------------------------------------ anti-cheat "Packet Time out"
+ * The game's built-in anti-cheat (UnCheating) flags a player as cheating, bit 1 of the code in
+ * "Player %s seems to be cheating (%X)", when no anti-cheat report has arrived from them for 7 s,
+ * and kicks them 15 s later. A player still loading the map, or a short connection stall over the
+ * internet, trips it. The two instructions that read the 7 s constant (shared with 16 other places,
+ * so the constant itself is left alone) are pointed at our own value instead. Only the host's
+ * setting matters. [P2P] CheatTimeoutSeconds=60 (0 = keep the game's 7 s). The other checks
+ * (health, ammo, speed, unwanted programs, ...) are not touched. */
+static float g_cheatTimeout = 60.0f;
+static void patch_cheat_timeout(void)
+{
+    static const struct { DWORD addr; BYTE op[4]; } sites[2] = {
+        { 0x10a00938, { 0xF3, 0x0F, 0x10, 0x0D } },   /* movss xmm1, [7.0] */
+        { 0x10a00b5e, { 0xF3, 0x0F, 0x58, 0x05 } },   /* addss xmm0, [7.0] */
+    };
+    const DWORD k7 = 0x10fa498c;
+    int secs = GetPrivateProfileIntA("P2P", "CheatTimeoutSeconds", 60, g_iniPath), i;
+    DWORD old;
+    if (secs <= 0) { logf("Anti-cheat packet time-out: game default (7 s)"); return; }
+    for (i = 0; i < 2; i++) {
+        BYTE *p = (BYTE *)(ULONG_PTR)sites[i].addr;
+        if (IsBadReadPtr(p, 8) || memcmp(p, sites[i].op, 4) || *(DWORD *)(p + 4) != k7) {
+            logf("Anti-cheat packet time-out: game code not as expected - not changed");
+            return;
+        }
+    }
+    g_cheatTimeout = (float)secs;
+    for (i = 0; i < 2; i++) {
+        BYTE *p = (BYTE *)(ULONG_PTR)sites[i].addr;
+        if (VirtualProtect(p + 4, 4, PAGE_EXECUTE_READWRITE, &old)) {
+            *(DWORD *)(p + 4) = (DWORD)(ULONG_PTR)&g_cheatTimeout;
+            VirtualProtect(p + 4, 4, old, &old);
+        }
+    }
+    FlushInstructionCache(GetCurrentProcess(), (void *)(ULONG_PTR)0x10a00900, 0x300);
+    logf("Anti-cheat packet time-out raised from 7 s to %d s (loading/lag no longer flagged as cheating)", secs);
+}
+
 static DWORD g_pid;
 static HWND  g_foundWnd;
 
@@ -783,6 +821,7 @@ static void init(HMODULE self)
         logf("Disabled in ini; acting as plain dinput8 passthrough");
         return;
     }
+    patch_cheat_timeout();
 
     iphlp = LoadLibraryA("iphlpapi.dll");
     if (!g_realGetAdaptersInfo && iphlp)
