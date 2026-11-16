@@ -772,6 +772,9 @@ static void display_init(void)
     }
 }
 
+/* ------------------------------------------------------- frame-rate cap */
+#include "framecap.c"
+
 /* ------------------------------------------------------------ crash note */
 static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep)
 {
@@ -816,6 +819,7 @@ static void init(HMODULE self)
     (void)self;
 
     display_init();
+    framecap_init(GetPrivateProfileIntA("P2P", "StatsSeconds", 5, g_iniPath));
 
     if (!g_enabled) {
         logf("Disabled in ini; acting as plain dinput8 passthrough");

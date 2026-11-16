@@ -88,6 +88,10 @@ Applied every time you press **PLAY**:
   This switches movement to W/A/S/D and moves Berzerk to Q. Only keys still on the stock layout are
   changed, so your own rebinds are kept. Applies to the default profile and to every saved profile in
   `C:\ProgramData\Ubisoft\SplinterCell4\Save\Online`.
+- **Frame rate limit:** *60 FPS* (default), *45*, *30* or *No limit*. The game's multiplayer was built
+  for about 30 FPS; at high frame rates movement goes stiff (it feels 4-way only, strafing and diagonals
+  are weak) and aiming feels spongy. With V-Sync off or in a borderless window nothing else caps it, so a
+  modern PC can run it at hundreds of FPS. If 60 still feels stiff, try 30.
 
 What `dinput8.dll` adds on the game side (`[Display]` in `SCDA_P2P.ini`):
 - `DpiAware=1`: the game renders at the real screen resolution even with Windows display scaling
@@ -95,6 +99,8 @@ What `dinput8.dll` adds on the game side (`[Display]` in `SCDA_P2P.ini`):
 - `ModernResolutions=1`: the in-game video menu lists modes your monitor supports (up to 3840x2160)
   instead of the original 640x400 to 1600x1200.
 - `Borderless=1` (set by the launcher): turns the game window into a borderless window covering the monitor.
+- `FrameLimit=60` (set by the launcher): frame-rate cap, applied where the game shows each frame
+  (Direct3D Present); `0` = no cap. The log shows `FPS ... average, slowest frame ... ms` every `StatsSeconds`.
 
 The first time, the original files are saved as `Default.ini.scdap2p-backup` and
 `PlayerProfilePC_<name>.ini.scdap2p-backup`.
@@ -142,6 +148,8 @@ with the saved network ID.
 
 ## Troubleshooting
 - Open `SCDA_P2P.log`. You should see `game will use "ZeroTier Virtual Port" ip=...`.
+- **Stiff movement / weak strafing:** check the `FPS` lines in the log. Everyone should be at or below
+  the launcher's frame rate limit; try 30 if 60 still feels wrong.
 - **Dropped from matches:** every 5 seconds the log writes a `STATS` line per player: packets sent
   and received, and how long since that player last answered. `STATS WARNING: ... stopped answering`
   shows whose connection went quiet. `never answered` means that player's PC isn't letting the game's

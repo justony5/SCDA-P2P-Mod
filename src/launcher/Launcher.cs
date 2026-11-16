@@ -120,7 +120,7 @@ namespace ScdaP2P
     // Updates: checks the latest GitHub release of the mod and installs its files over this one.
     static class Updater
     {
-        public const string Version = "1.3";
+        public const string Version = "1.4";
         const string Api = "https://api.github.com/repos/justony5/SCDA-P2P-Mod/releases/latest";
         public const string ReleasesPage = "https://github.com/justony5/SCDA-P2P-Mod/releases/latest";
 
@@ -276,7 +276,7 @@ namespace ScdaP2P
         TextBox txtLog;
         Label lblNode;
         CheckBox chkCloseApp, chkWasd, chkPad;
-        ComboBox cboMode, cboRes;
+        ComboBox cboMode, cboRes, cboFps;
         Button btnPlay, btnCopy, btnInstallZt, btnUpdate;
         const string ZeroTierSite = "https://www.zerotier.com/";
         const string ZeroTierDownload = "https://www.zerotier.com/download/";
@@ -295,7 +295,7 @@ namespace ScdaP2P
             Text = "Splinter Cell Double Agent - P2P Launcher v" + Updater.Version;
             try { File.Delete(Application.ExecutablePath + ".old"); } catch { }   // left behind by an update
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false;
-            ClientSize = new Size(520, 538); Font = new Font("Segoe UI", 9f);
+            ClientSize = new Size(520, 566); Font = new Font("Segoe UI", 9f);
             StartPosition = FormStartPosition.CenterScreen;
             try { Icon = Icon.ExtractAssociatedIcon(gameExe); } catch { }
 
@@ -327,7 +327,7 @@ namespace ScdaP2P
                                          Checked = Ini.GetBool("Launcher", "CloseZeroTierApp", true) };
             Controls.Add(chkCloseApp);
 
-            var grp = new GroupBox { Text = "Game settings (applied when you press PLAY)", Left = 12, Top = 126, Width = 496, Height = 130 };
+            var grp = new GroupBox { Text = "Game settings (applied when you press PLAY)", Left = 12, Top = 126, Width = 496, Height = 158 };
             grp.Controls.Add(new Label { Text = "Display:", Left = 10, Top = 26, AutoSize = true });
             cboMode = new ComboBox { Left = 80, Top = 22, Width = 150, DropDownStyle = ComboBoxStyle.DropDownList };
             cboMode.Items.AddRange(new object[] { "Borderless window", "Fullscreen", "Window" });
@@ -337,21 +337,25 @@ namespace ScdaP2P
                                      Checked = Ini.GetBool("Controls", "WASD", true) };
             chkPad = new CheckBox { Text = "Xbox controller: RT fire, LT alt fire, LB sprint / spy run away, RB gadget", Left = 10, Top = 84, Width = 476,
                                     Checked = Ini.GetBool("Controls", "ModernPad", true) };
-            grp.Controls.AddRange(new Control[] { cboMode, cboRes, chkWasd, chkPad });
+            grp.Controls.Add(new Label { Text = "Frame rate limit:", Left = 10, Top = 118, AutoSize = true });
+            cboFps = new ComboBox { Left = 120, Top = 114, Width = 180, DropDownStyle = ComboBoxStyle.DropDownList };
+            cboFps.Items.AddRange(FpsChoices);
+            grp.Controls.Add(new Label { Text = "High FPS makes movement stiff", Left = 310, Top = 118, AutoSize = true, ForeColor = Color.DimGray });
+            grp.Controls.AddRange(new Control[] { cboMode, cboRes, chkWasd, chkPad, cboFps });
             Controls.Add(grp);
             FillDisplayChoices();
 
-            btnPlay = new Button { Text = "PLAY", Left = 12, Top = 266, Width = 496, Height = 40, Font = new Font("Segoe UI", 12f, FontStyle.Bold) };
+            btnPlay = new Button { Text = "PLAY", Left = 12, Top = 294, Width = 496, Height = 40, Font = new Font("Segoe UI", 12f, FontStyle.Bold) };
             btnPlay.Click += (s, e) => StartPlay();
             Controls.Add(btnPlay);
 
-            txtLog = new TextBox { Left = 12, Top = 316, Width = 496, Height = 188, Multiline = true, ReadOnly = true,
+            txtLog = new TextBox { Left = 12, Top = 344, Width = 496, Height = 188, Multiline = true, ReadOnly = true,
                                    ScrollBars = ScrollBars.Vertical, BackColor = Color.Black, ForeColor = Color.LightGreen,
                                    Font = new Font("Consolas", 8.5f) };
             Controls.Add(txtLog);
 
             Controls.Add(new Label { Text = "Developed by Deceitful Gaming | Tech  x  Claude Code",
-                                     Left = 12, Top = 512, Width = 496, Height = 18, TextAlign = ContentAlignment.MiddleCenter,
+                                     Left = 12, Top = 540, Width = 496, Height = 18, TextAlign = ContentAlignment.MiddleCenter,
                                      ForeColor = Color.DimGray, Font = new Font("Segoe UI", 8.5f, FontStyle.Italic) });
 
             Shown += (s, e) => OnShownInit();
@@ -367,7 +371,7 @@ namespace ScdaP2P
         {
             if (InvokeRequired) { BeginInvoke(new Action<bool>(SetBusy), busy); return; }
             btnPlay.Enabled = !busy; txtNetwork.Enabled = !busy;
-            chkCloseApp.Enabled = cboMode.Enabled = cboRes.Enabled = chkWasd.Enabled = chkPad.Enabled = !busy;
+            chkCloseApp.Enabled = cboMode.Enabled = cboRes.Enabled = cboFps.Enabled = chkWasd.Enabled = chkPad.Enabled = !busy;
             if (busy) WindowState = FormWindowState.Minimized; else { WindowState = FormWindowState.Normal; Activate(); }
         }
 
@@ -535,8 +539,14 @@ namespace ScdaP2P
 
 
         // ---- display / controls choices
+        static readonly object[] FpsChoices = { "30 FPS (as the game was built)", "45 FPS", "60 FPS (recommended)", "No limit" };
+        static readonly int[] FpsValues = { 30, 45, 60, 0 };
+
         void FillDisplayChoices()
         {
+            int fps; if (!int.TryParse(Ini.Get("Display", "FrameLimit", "60"), out fps)) fps = 60;
+            int fi = Array.IndexOf(FpsValues, fps);
+            cboFps.SelectedIndex = fi >= 0 ? fi : Array.IndexOf(FpsValues, 60);
             string mode = Ini.Get("Display", "Mode", "Borderless window");
             cboMode.SelectedItem = cboMode.Items.Contains(mode) ? mode : "Borderless window";
             var native = GameSettings.NativeResolution();
@@ -552,6 +562,7 @@ namespace ScdaP2P
             Ini.Set("Display", "Resolution", cboRes.SelectedIndex <= 0 ? "" : Convert.ToString(cboRes.SelectedItem));
             Ini.Set("Controls", "WASD", chkWasd.Checked ? "1" : "0");
             Ini.Set("Controls", "ModernPad", chkPad.Checked ? "1" : "0");
+            if (cboFps.SelectedIndex >= 0) Ini.Set("Display", "FrameLimit", FpsValues[cboFps.SelectedIndex].ToString());
         }
 
         // ---- network ID: saved next to the game and in %APPDATA% as a backup
@@ -695,6 +706,8 @@ namespace ScdaP2P
                                          Ini.Get("Display", "Resolution", ""), Ini.GetBool("Controls", "WASD", true),
                                          Ini.GetBool("Controls", "ModernPad", true), Log); }
                 catch (Exception ex) { Log("Game settings not applied: " + ex.Message); }
+                string lim = Ini.Get("Display", "FrameLimit", "60");
+                Log("Frame rate limit: " + (lim == "0" ? "off" : lim + " FPS"));
                 SetBusy(true);
                 gameStarted = true;
                 int exitCode;
