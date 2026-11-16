@@ -120,7 +120,7 @@ namespace ScdaP2P
     // Updates: checks the latest GitHub release of the mod and installs its files over this one.
     static class Updater
     {
-        public const string Version = "1.4";
+        public const string Version = "1.5";
         const string Api = "https://api.github.com/repos/justony5/SCDA-P2P-Mod/releases/latest";
         public const string ReleasesPage = "https://github.com/justony5/SCDA-P2P-Mod/releases/latest";
 

@@ -29,7 +29,13 @@ static volatile LONG  g_frames, g_framesTotal;
 static volatile LONG  g_slowestUs;             /* longest frame in this interval, microseconds */
 static LONGLONG       g_lastFrame;
 static volatile LONG  g_devices;
+static volatile LONG  g_capThread;             /* the thread whose frames are paced (the one that made the device) */
+static volatile LONG  g_presentThreads[4];
 
+/* v1.4 paced every thread that called Present with one shared deadline. The game also presents
+ * from a second thread while loading, so the two raced on the 64-bit deadline (not atomic on x86)
+ * and a torn value could make Present wait for a very long time: an endless "loading" menu.
+ * Now only one thread is paced, and no wait is ever longer than two frames. */
 static void fc_wait(void)
 {
     LARGE_INTEGER now;
@@ -38,9 +44,14 @@ static void fc_wait(void)
         g_next = now.QuadPart + g_period;
         return;
     }
+    if (g_next - now.QuadPart > g_period * 2) {               /* never wait more than two frames */
+        g_next = now.QuadPart + g_period;
+        return;
+    }
     for (;;) {
         LONGLONG left = g_next - now.QuadPart;
         if (left <= 0) break;
+        if (left > g_period * 2) break;                     /* paranoia: deadline went bad mid-wait */
         if (left * 1000 / g_qpf >= 2) {
             if (g_capTimer) {
                 LARGE_INTEGER due;
@@ -62,6 +73,18 @@ static void fc_wait(void)
 static HRESULT WINAPI Hook_Present(void *dev, const RECT *src, const RECT *dst, HWND wnd, const void *dirty)
 {
     LARGE_INTEGER now;
+    LONG tid = (LONG)GetCurrentThreadId();
+    int i;
+    for (i = 0; i < 4; i++) {                               /* log each thread that presents (diagnostics) */
+        LONG prev = g_presentThreads[i];
+        if (prev == tid) break;
+        if (!prev && InterlockedCompareExchange(&g_presentThreads[i], tid, 0) == 0) {
+            logf("Frame rate: thread %ld shows frames%s", tid,
+                 tid == g_capThread ? " (main, paced)" : " (not paced)");
+            break;
+        }
+    }
+    if (tid != g_capThread) return g_realPresent(dev, src, dst, wnd, dirty);   /* loading-screen thread etc. */
     if (g_fpsLimit > 0) fc_wait();
     QueryPerformanceCounter(&now);
     if (g_lastFrame) {
@@ -91,6 +114,7 @@ static HRESULT WINAPI Hook_CreateDevice(void *d3d, UINT adapter, DWORD type, HWN
 {
     HRESULT hr = g_realCreateDevice(d3d, adapter, type, wnd, flags, pp, outDev);
     if (SUCCEEDED(hr) && outDev && *outDev) {
+        InterlockedExchange(&g_capThread, (LONG)GetCurrentThreadId());
         int ok = fc_patch_slot(*outDev, D3DDEV_PRESENT_SLOT, (void *)Hook_Present, (void **)&g_realPresent);
         if (InterlockedIncrement(&g_devices) == 1) {
             if (!ok) logf("Frame rate: could not hook Direct3D Present - no cap");
